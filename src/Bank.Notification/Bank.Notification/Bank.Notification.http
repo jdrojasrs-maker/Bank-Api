@@ -1,0 +1,6 @@
+@Bank.Notification_HostAddress = http://localhost:5058
+
+GET {{Bank.Notification_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
