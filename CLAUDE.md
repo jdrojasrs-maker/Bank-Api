@@ -38,7 +38,7 @@ Patrón de consumo: `ServiceBusReciveService` → `IMediator.Publish(ProcessEven
 
 - Un solo tópico (`SERVICEBUSTOPIC`); el nombre del evento va en `ServiceBusMessage.Subject` y coincide con el nombre de la suscripción (kebab-case, p. ej. `transfer-initiated`).
 - Los nombres viven en `Domain/Constants` de cada servicio (`ReceivedSubscriptionsConstants` / `SendSubscriptionConstants`). **Los strings deben coincidir entre servicios**; al añadir o renombrar un evento, actualizar emisor, receptor, la suscripción en Azure y la tabla del README.
-- Payload JSON; el `CorrelationId` creado en el Gateway viaja en todos los eventos y es la clave de idempotencia/consulta en cada BD.
+- Payload JSON; el `CorrelationId` creado en el Gateway viaja en todos los eventos y debe ser la clave de idempotencia/consulta en cada BD.
 - Estados: `Pending`, `Completed`, `Canceled` (Transfer usa `Complete`).
 - Serialización: emisores con `System.Text.Json`, receptores con `Newtonsoft.Json` (case-insensitive). Mantener compatibilidad de campos.
 
