@@ -12,6 +12,8 @@ services:
     environment:
       ACCEPT_EULA: ${ACCEPT_EULA}
       MSSQL_SA_PASSWORD: "${SQL_PASSWORD}"
+    ports:
+      - "127.0.0.1:1433:1433"   # solo accesible desde esta máquina; lo usan los servicios con dotnet run
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
       interval: 5s
