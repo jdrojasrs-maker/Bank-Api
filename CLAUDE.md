@@ -14,11 +14,13 @@ Solución: `Bank.slnx`. Servicios en `src/Bank.<Servicio>/Bank.<Servicio>.Api/` 
 
 ```bash
 dotnet build Bank.slnx
-dotnet run --project src/Bank.<Servicio>/Bank.<Servicio>.Api
+dotnet run --project src/Bank.<Servicio>/Bank.<Servicio>.Api --launch-profile http
 dotnet user-secrets set "<CLAVE>" "<valor>" --project <proyecto>
 ```
 
-Puertos de desarrollo: ver cada `Properties/launchSettings.json`. No hay proyecto de pruebas aún.
+Siempre correr los servicios en el host con el perfil **`http`**. El perfil "Container (Dockerfile)" de Visual Studio no sirve en local: dentro del contenedor `localhost` no alcanza el emulador ni SQL (síntoma: `Connection refused` en `ServiceBusSenderService`).
+
+Puertos (perfil `http`): Gateway 5204, Transaction 5110, Balance 5287, Transfer 5197, Notification 5267. El endpoint de entrada es `POST http://localhost:5204/api-gateway`. No hay proyecto de pruebas aún.
 
 ## Configuración
 
