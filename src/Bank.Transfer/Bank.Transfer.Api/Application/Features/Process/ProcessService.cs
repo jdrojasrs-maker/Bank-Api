@@ -11,10 +11,12 @@ public class ProcessService: IProcessService
 {
     private readonly IDatabaseService _db;
     private readonly IServiceBusSenderService _sb;
-    public ProcessService(IDatabaseService db, IServiceBusSenderService sb)
+    private readonly ILogger<ProcessService> _logger;
+    public ProcessService(IDatabaseService db, IServiceBusSenderService sb, ILogger<ProcessService> logger)
     {
         _db = db;
         _sb = sb;
+        _logger = logger;
     }
 
     public async Task Execute(string message)
@@ -25,14 +27,23 @@ public class ProcessService: IProcessService
     private async Task TransferInitiated(string message)
     {
         var transfer = JsonConvert.DeserializeObject<TransferEntity>(message);
-        await ProcessDataBase(transfer);
-
         var transferModel = new { transfer.CorrelationId, transfer.CustomerId };
 
-        if (transfer.Id != 0)
-            await _sb.Execute(transferModel, SendSubscriptionConstants.TRANSFER_CONFIRMED);
-        else
+        try
+        {
+            await ProcessDataBase(transfer);
+        }
+        catch (Exception ex) when (DatabaseErrors.IsPermanent(ex))
+        {
+            // Error permanente: reintentar no sirve. Se compensa en vez de dejar la saga colgada.
+            // Un error transitorio no entra aquí: se propaga y Service Bus reintenta.
+            _logger.LogError(ex, "Transfer {CorrelationId} rechazada por la base de datos; se emite {Event}",
+                transfer.CorrelationId, SendSubscriptionConstants.TRANSFER_FAILED);
             await _sb.Execute(transferModel, SendSubscriptionConstants.TRANSFER_FAILED);
+            return;
+        }
+
+        await _sb.Execute(transferModel, SendSubscriptionConstants.TRANSFER_CONFIRMED);
     }
 
     public async Task<TransferEntity> ProcessDataBase(TransferEntity transfer)
