@@ -35,7 +35,8 @@ namespace Bank.Transaction.Api.Persistence.Migrations
 
                     b.Property<string>("CorrelationId")
                         .IsRequired()
-                        .HasColumnType("nvarchar(max)");
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("CurrentState")
                         .IsRequired()
@@ -56,6 +57,10 @@ namespace Bank.Transaction.Api.Persistence.Migrations
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("CorrelationId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_Transaction_CorrelationId");
 
                     b.ToTable("Transaction");
                 });

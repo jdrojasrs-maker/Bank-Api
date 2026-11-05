@@ -8,4 +8,5 @@ public interface IDatabaseService
     DbSet<TransactionEntity> Transaction { get; set; }
 
     Task<bool> SaveAsync();
+    void ClearChanges();
 }

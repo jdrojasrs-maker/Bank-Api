@@ -23,3 +23,9 @@ public class SendSubscriptionConstants
     public const string TRANSFER_FAILED_BALANCE = "transfer-failed-balance";
     public const string TRANSACTION_COMPLETED = "transaction-completed";
 }
+public static class IgnoredMessageReasonConstants
+{
+    public const string FINAL_STATE_PROTECTED = "FinalStateProtected";
+    public const string NO_SUCH_TRANSACTION = "NoSuchTransaction";
+    public const string INVALID_MESSAGE = "InvalidMessage";
+}

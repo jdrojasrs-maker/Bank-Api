@@ -14,4 +14,9 @@ public static class DatabaseErrors
     public static bool IsPermanent(Exception exception) =>
         exception is DbUpdateException { InnerException: SqlException sql }
         && PermanentSqlErrors.Contains(sql.Number);
+
+    // Violación de unicidad (2601 índice único, 2627 restricción UNIQUE/PK): el CorrelationId ya estaba registrado.
+    public static bool IsUniqueViolation(Exception exception) =>
+        exception is DbUpdateException { InnerException: SqlException sql }
+        && (sql.Number == 2601 || sql.Number == 2627);
 }
