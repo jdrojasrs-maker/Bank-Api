@@ -15,4 +15,8 @@
   <Folder Name="/src/Bank.Balance/">
     <Project Path="src/Bank.Balance/Bank.Balance.Api/Bank.Balance.Api.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Bank.Transfer.Api.Tests/Bank.Transfer.Api.Tests.csproj" />
+    <Project Path="tests/Bank.Transaction.Api.Tests/Bank.Transaction.Api.Tests.csproj" />
+  </Folder>
 </Solution>
