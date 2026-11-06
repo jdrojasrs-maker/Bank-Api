@@ -91,6 +91,16 @@ Cadena del emulador: `Endpoint=sb://localhost;SharedAccessKeyName=RootManageShar
 - Las migraciones se aplican por comando, no al arrancar el servicio.
 - Notification usa Cosmos DB, sin migraciones.
 
+## Integración continua (GitHub Actions)
+
+`.github/workflows/ci.yml` se ejecuta en cada pull request hacia `main` o `develop` y en cada push a esas ramas:
+
+- **Build**: restaura y compila `Bank.slnx` en Release (más una auditoría informativa de paquetes vulnerables que no bloquea).
+- **Tests (Transfer)** y **Tests (Transaction)**: un job por servicio, en paralelo. Usan el Docker del runner para levantar SQL Server con Testcontainers; no requieren secretos.
+- Los tres checks DEBEN exigirse en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
+- El runner es Linux (distingue mayúsculas): cuidar la capitalización de rutas y de referencias entre proyectos.
+- Los workflows no se pueden ejecutar en local; se validan subiendo la rama y mirando la pestaña *Actions*.
+
 ## Estructura por servicio (respetar)
 
 - `Domain/` — `Constants` (nombres de eventos y estados), `Entities`, `Events` (`ProcessEvents : INotification`). Sin dependencias externas.

@@ -1,24 +1,21 @@
 <!--
 SYNC IMPACT REPORT (borrador de revisión; eliminar antes de versionar el archivo)
-Version change: (plantilla sin rellenar) → 1.0.0
-Modified principles: ninguno (adopción inicial)
-Added principles:
-  - I. Servicios desacoplados solo por eventos
-  - II. Handlers idempotentes por CorrelationId
-  - III. Todo camino de error emite su evento de fallo
-  - IV. Cada servicio es dueño de su base de datos
-  - V. Toda corrección lleva prueba automática (NON-NEGOTIABLE)
-Added sections: Restricciones técnicas; Flujo de desarrollo
+Version change: 1.0.0 → 1.1.0 (MINOR: se amplía materialmente la guía de "Flujo de desarrollo" y de la revisión de cumplimiento)
+Modified principles: ninguno (los cinco principios no cambian)
+Modified sections:
+  - Flujo de desarrollo: nueva regla de integración continua (checks obligatorios y prohibición de relajarlos)
+  - Governance / Revisión de cumplimiento: ahora también verifica que la integración continua esté en verde
+Added sections: ninguna
 Removed sections: ninguna
 Templates requiring updates: ninguna modificada aquí (las plantillas leen la constitución en tiempo de ejecución).
 Follow-up TODOs:
-  - Aún no existe proyecto de pruebas (CLAUDE.md: "No hay proyecto de pruebas aún"); el Principio V
-    exige crearlo antes de la primera corrección que deba cubrirse.
+  - Activar en GitHub la protección de main y develop exigiendo los checks "Build", "Tests (Transfer)" y
+    "Tests (Transaction)" (ajuste de la interfaz web; no es un archivo del repo).
   - Brechas conocidas frente a los principios (deuda registrada, no corregida aquí):
     * III: la compensación cubre solo el primer paso de Balance, Transfer y Transaction; falta
       emitir el evento de fallo al agotar los reintentos de errores transitorios y en los
       manejadores que solo actualizan estado.
-    * II: Transfer inserta siempre (no es idempotente) y ninguna base tiene índice único en CorrelationId.
+    * II: Balance y Notification aún no son idempotentes (Transfer y Transaction sí).
 -->
 # Bank Constitution
 
@@ -94,6 +91,12 @@ con inyección de fallos ya demostraron los defectos y ahora deben automatizarse
   petición expresa.
 - Los commits y pushes solo se realizan cuando el responsable del repositorio lo indica de forma
   explícita.
+- Todo cambio DEBE integrarse en `main` o `develop` mediante pull request con la integración continua
+  (`.github/workflows/ci.yml`: compilación de `Bank.slnx` y pruebas de Transfer y Transaction) en verde.
+  Los checks `Build`, `Tests (Transfer)` y `Tests (Transaction)` DEBEN exigirse en la protección de
+  ramas del repositorio.
+- NO DEBE desactivarse, omitirse ni relajarse un check de integración continua para lograr que un
+  cambio pase; si un check falla, se corrige la causa.
 
 ## Governance
 
@@ -107,7 +110,8 @@ de desarrollo en curso y NO DEBE contradecirla.
 - Versionado (semántico): MAJOR para eliminar o redefinir un principio de forma incompatible;
   MINOR para añadir un principio o sección, o ampliar materialmente una guía; PATCH para
   aclaraciones y correcciones de redacción.
-- Revisión de cumplimiento: toda revisión de cambios DEBE verificar los cinco principios. Cualquier
-  excepción DEBE justificarse por escrito en el propio cambio y registrarse como deuda técnica.
+- Revisión de cumplimiento: toda revisión de cambios DEBE verificar los cinco principios y que la
+  integración continua esté en verde. Cualquier excepción DEBE justificarse por escrito en el propio
+  cambio y registrarse como deuda técnica.
 
-**Version**: 1.0.0 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-03
+**Version**: 1.1.0 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-05
