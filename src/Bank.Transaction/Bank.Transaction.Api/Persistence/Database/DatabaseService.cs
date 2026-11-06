@@ -17,9 +17,20 @@ public class DatabaseService: DbContext, IDatabaseService
         return await base.SaveChangesAsync() > 0;
     }
 
+    public void ClearChanges()
+    {
+        ChangeTracker.Clear();
+    }
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
         //modelBuilder.Entity<TransactionEntity>().ToTable("Transaction");
+
+        modelBuilder.Entity<TransactionEntity>(entity =>
+        {
+            entity.Property(x => x.CorrelationId).HasMaxLength(64);
+            entity.HasIndex(x => x.CorrelationId).IsUnique().HasDatabaseName("IX_Transaction_CorrelationId");
+        });
     }
 }
