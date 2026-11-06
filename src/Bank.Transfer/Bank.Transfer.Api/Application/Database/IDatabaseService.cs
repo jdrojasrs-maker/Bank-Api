@@ -6,6 +6,8 @@ namespace Bank.Transfer.Api.Application.Database;
 public interface IDatabaseService
 {
     DbSet<TransferEntity> Transfer { get; set; }
+    DbSet<TransferRequestEntity> TransferRequest { get; set; }
 
     Task<bool> SaveAsync();
+    void ClearChanges();
 }

@@ -11,10 +11,12 @@ public class ProcessService: IProcessService
 {
     private readonly IDatabaseService _db;
     private readonly IServiceBusSenderService _sb;
-    public ProcessService(IDatabaseService databaseService, IServiceBusSenderService sb)
+    private readonly ILogger<ProcessService> _logger;
+    public ProcessService(IDatabaseService databaseService, IServiceBusSenderService sb, ILogger<ProcessService> logger)
     {
         _db = databaseService;
         _sb = sb;
+        _logger = logger;
     }
 
     public async Task Execute(string message, string subscription)
@@ -37,14 +39,23 @@ public class ProcessService: IProcessService
     {
         var balance = JsonConvert.DeserializeObject<BalanceEntity>(message);
         balance.CurrentState = CurrentStateConstants.PENDING;
-        var saveBalance = await ProcessDataBase(balance);
+        var eventModel = new { balance.CorrelationId, balance.CustomerId };
 
-        var eventModel = new { saveBalance.CorrelationId, saveBalance.CustomerId };
-
-        if (saveBalance.Id != 0)
-            await _sb.Execute(eventModel, SendSubscriptionConstants.BALANCE_CONFIRMED);
-        else
+        try
+        {
+            await ProcessDataBase(balance);
+        }
+        catch (Exception ex) when (DatabaseErrors.IsPermanent(ex))
+        {
+            // Error permanente: reintentar no sirve. Se compensa en vez de dejar la saga colgada.
+            // Un error transitorio no entra aquí: se propaga y Service Bus reintenta.
+            _logger.LogError(ex, "Balance {CorrelationId} rechazado por la base de datos; se emite {Event}",
+                balance.CorrelationId, SendSubscriptionConstants.BALANCE_FAILED);
             await _sb.Execute(eventModel, SendSubscriptionConstants.BALANCE_FAILED);
+            return;
+        }
+
+        await _sb.Execute(eventModel, SendSubscriptionConstants.BALANCE_CONFIRMED);
     }
 
     private async Task TransferConfirmedBalance(string message)
