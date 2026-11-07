@@ -49,7 +49,7 @@ jobs:
       - name: Compilar (Release)
         run: dotnet build Bank.slnx --configuration Release --no-restore
 
-      # Informativo: hoy hay avisos conocidos (System.Security.Cryptography.Pkcs 9.0.11). No bloquea el pipeline.
+      # Informativo: no bloquea el pipeline. Pkcs transitivo fijado en 10.0.14 en los servicios con SQL.
       - name: Auditar paquetes vulnerables (informativo)
         continue-on-error: true
         run: |
