@@ -97,7 +97,10 @@ Cadena del emulador: `Endpoint=sb://localhost;SharedAccessKeyName=RootManageShar
 
 - **Build**: restaura y compila `Bank.slnx` en Release (más una auditoría informativa de paquetes vulnerables que no bloquea).
 - **Tests (Transfer)** y **Tests (Transaction)**: un job por servicio, en paralelo. Usan el Docker del runner para levantar SQL Server con Testcontainers; no requieren secretos.
-- Los tres checks DEBEN exigirse en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
+- Los tres checks están exigidos en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo); sus nombres deben coincidir exactamente con los de los jobs (`Build`, no `build`). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
+- Flujo: rama nueva desde `develop` actualizado (`feat/`, `fix/`, `ci/`) → push → pull request a `develop` con los tres checks en verde → merge. Nunca commit directo a `main`/`develop`.
+- Cada job de pruebas sube su `.trx` como artefacto, y una ejecución nueva sobre el mismo PR cancela la anterior.
+- `System.Security.Cryptography.Pkcs` está fijado a 10.0.14 en Transfer, Transaction y Balance solo para corregir la versión vulnerable (9.0.11) que arrastra `Microsoft.Data.SqlClient` 6.1.6; quitar la referencia cuando SqlClient la corrija. El paso de auditoría de la CI debe salir limpio.
 - El runner es Linux (distingue mayúsculas): cuidar la capitalización de rutas y de referencias entre proyectos.
 - Los workflows no se pueden ejecutar en local; se validan subiendo la rama y mirando la pestaña *Actions*.
 
