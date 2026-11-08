@@ -1,3 +1,4 @@
+using Bank.Balance.Api.Application.Resilience;
 using Azure.Messaging.ServiceBus;
 using Bank.Balance.Api.Application.Database;
 using Bank.Balance.Api.Application.External.ServiceBusSender;
@@ -18,6 +19,7 @@ builder.Services.AddScoped<IProcessService, ProcessService>();
 builder.Services.AddSingleton<IServiceBusSenderService, ServiceBusSenderService>();
 
 
+builder.Services.AddSingleton<IFailureCompensator, NullFailureCompensator>();
 builder.Services.AddHostedService<ServiceBusReciveService>();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 

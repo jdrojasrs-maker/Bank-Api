@@ -18,5 +18,7 @@
   <Folder Name="/tests/">
     <Project Path="tests/Bank.Transfer.Api.Tests/Bank.Transfer.Api.Tests.csproj" />
     <Project Path="tests/Bank.Transaction.Api.Tests/Bank.Transaction.Api.Tests.csproj" />
+    <Project Path="tests/Bank.Balance.Api.Tests/Bank.Balance.Api.Tests.csproj" />
+    <Project Path="tests/Bank.Notification.Api.Tests/Bank.Notification.Api.Tests.csproj" />
   </Folder>
 </Solution>
