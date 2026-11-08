@@ -6,14 +6,33 @@ using System.Text.Json;
 // Para repetir un mensaje real hay que usar el mismo monto, cliente y cuentas; si no, el servicio lo trata como contenido distinto.
 // Con los servicios en marcha, Transfer debe registrar una sola transferencia y emitir un solo resultado.
 // Cadena de conexión: variable de entorno SERVICEBUSCONSTR, o la del emulador local (no es un secreto).
+//
+// Modo crudo (mensajes venenosos y reintentos): dotnet run -- --raw <evento> <cuerpo> [retryAttempt]
+//   Publica el cuerpo tal cual, sin validarlo, con el Subject indicado; sirve para enviar cuerpos inválidos ("", "null",
+//   "{ no es json", sin CorrelationId...). retryAttempt añade la propiedad RetryAttempt (p. ej. 5 para simular reintentos agotados).
+//   Ejemplo: dotnet run -- --raw balance-initiated "{\"CorrelationId\":\"abc\",\"CustomerId\":\"x\"}"
 
 const string DefaultConnection =
     "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";
 const string Topic = "bank-transfer";
 
+if (args.Length >= 3 && args[0] == "--raw")
+{
+    var rawConnection = Environment.GetEnvironmentVariable("SERVICEBUSCONSTR") ?? DefaultConnection;
+    await using var rawClient = new ServiceBusClient(rawConnection);
+    await using var rawSender = rawClient.CreateSender(Topic);
+    var rawMessage = new ServiceBusMessage(args[2]) { Subject = args[1], ContentType = "application/json" };
+    if (args.Length > 3)
+        rawMessage.ApplicationProperties["RetryAttempt"] = int.Parse(args[3]);
+    await rawSender.SendMessageAsync(rawMessage);
+    Console.WriteLine($"  enviado {args[1]} (cuerpo de {args[2].Length} caracteres)");
+    return 0;
+}
+
 if (args.Length == 0 || string.IsNullOrWhiteSpace(args[0]))
 {
     Console.WriteLine("Uso: dotnet run -- <correlationId> [copias=3] [monto=1500] [evento=transfer-initiated] [clienteId=7] [origen] [destino]");
+    Console.WriteLine("     dotnet run -- --raw <evento> <cuerpo> [retryAttempt]");
     return 1;
 }
 
