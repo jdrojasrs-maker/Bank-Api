@@ -1,3 +1,4 @@
+using Bank.Transaction.Api.Application.Resilience;
 using Bank.Transaction.Api.Application.Database;
 using Bank.Transaction.Api.Application.Features.Process;
 using Bank.Transaction.Api.Application.Handlers;
@@ -15,6 +16,7 @@ builder.Services.AddScoped<IDatabaseService, DatabaseService>();
 builder.Services.AddScoped<IProcessService, ProcessService>();
 builder.Services.AddSingleton<IServiceBusSenderService, ServiceBusSenderService>();
 
+builder.Services.AddSingleton<IFailureCompensator, FailureCompensator>();
 builder.Services.AddHostedService<ServiceBusReciveService>();
 
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessHandler).Assembly));

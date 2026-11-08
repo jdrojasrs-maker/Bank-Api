@@ -1,3 +1,4 @@
+using Bank.Notification.Api.Application.Resilience;
 using Bank.Notification.Api.Application.Database;
 using Bank.Notification.Api.Application.External.SendGridEmail;
 using Bank.Notification.Api.Application.Features.Process;
@@ -15,6 +16,7 @@ builder.Services.AddScoped<IProcessService, ProcessService>();
 builder.Services.AddSingleton<ISendGridEmailService, SendGridEmailService>();
 
 
+builder.Services.AddSingleton<IFailureCompensator, NullFailureCompensator>();
 builder.Services.AddHostedService<ServiceBusReciveService>();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 

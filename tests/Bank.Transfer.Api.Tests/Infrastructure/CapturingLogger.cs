@@ -2,7 +2,8 @@ using Microsoft.Extensions.Logging;
 
 namespace Bank.Transfer.Api.Tests.Infrastructure;
 
-public record LogEntry(LogLevel Level, string Message, IReadOnlyDictionary<string, object?> Properties);
+public record LogEntry(LogLevel Level, string Message, IReadOnlyDictionary<string, object?> Properties,
+    Exception? Exception = null);
 
 // ILogger que conserva el nivel, el mensaje y las propiedades estructuradas (CorrelationId, MessageType, Reason).
 public class CapturingLogger<T> : ILogger<T>
@@ -35,7 +36,7 @@ public class CapturingLogger<T> : ILogger<T>
 
         lock (_lock)
         {
-            _entries.Add(new LogEntry(logLevel, formatter(state, exception), properties));
+            _entries.Add(new LogEntry(logLevel, formatter(state, exception), properties, exception));
         }
     }
 }

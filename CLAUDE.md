@@ -22,11 +22,13 @@ Siempre correr los servicios en el host con el perfil **`http`**. El perfil "Con
 
 Puertos (perfil `http`): Gateway 5204, Transaction 5110, Balance 5287, Transfer 5197, Notification 5267. El endpoint de entrada es `POST http://localhost:5204/api-gateway`.
 
-Pruebas automáticas (un proyecto por servicio; solo Transfer y Transaction por ahora). Usan xUnit y un SQL Server real en contenedor (Testcontainers) con las migraciones reales, por lo que **requieren Docker en marcha**:
+Pruebas automáticas (un proyecto por servicio: Transfer, Transaction, Balance y Notification). Usan xUnit; Transfer, Transaction y Balance usan un SQL Server real en contenedor (Testcontainers) con las migraciones reales, por lo que **requieren Docker en marcha** (las de Notification no usan base de datos):
 
 ```bash
 dotnet test tests/Bank.Transfer.Api.Tests
 dotnet test tests/Bank.Transaction.Api.Tests
+dotnet test tests/Bank.Balance.Api.Tests
+dotnet test tests/Bank.Notification.Api.Tests
 ```
 
 Ningún proyecto de pruebas debe referenciar a más de un servicio. Toda corrección lleva su prueba (ver `.specify/memory/constitution.md`, Principio V).
@@ -96,9 +98,9 @@ Cadena del emulador: `Endpoint=sb://localhost;SharedAccessKeyName=RootManageShar
 `.github/workflows/ci.yml` se ejecuta en cada pull request hacia `main` o `develop` y en cada push a esas ramas:
 
 - **Build**: restaura y compila `Bank.slnx` en Release (más una auditoría informativa de paquetes vulnerables que no bloquea).
-- **Tests (Transfer)** y **Tests (Transaction)**: un job por servicio, en paralelo. Usan el Docker del runner para levantar SQL Server con Testcontainers; no requieren secretos.
-- Los tres checks están exigidos en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo); sus nombres deben coincidir exactamente con los de los jobs (`Build`, no `build`). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
-- Flujo: rama nueva desde `develop` actualizado (`feat/`, `fix/`, `ci/`) → push → pull request a `develop` con los tres checks en verde → merge. Nunca commit directo a `main`/`develop`.
+- **Tests (Transfer)**, **Tests (Transaction)**, **Tests (Balance)** y **Tests (Notification)**: un job por servicio, en paralelo. Los tres primeros usan el Docker del runner para levantar SQL Server con Testcontainers; Notification no usa base de datos. Ninguno requiere secretos.
+- Los cinco checks están exigidos en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo); sus nombres deben coincidir exactamente con los de los jobs (`Build`, no `build`). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
+- Flujo: rama nueva desde `develop` actualizado (`feat/`, `fix/`, `ci/`) → push → pull request a `develop` con los cinco checks en verde → merge. Nunca commit directo a `main`/`develop`.
 - Cada job de pruebas sube su `.trx` como artefacto, y una ejecución nueva sobre el mismo PR cancela la anterior.
 - `System.Security.Cryptography.Pkcs` está fijado a 10.0.14 en Transfer, Transaction y Balance solo para corregir la versión vulnerable (9.0.11) que arrastra `Microsoft.Data.SqlClient` 6.1.6; quitar la referencia cuando SqlClient la corrija. El paso de auditoría de la CI debe salir limpio.
 - El runner es Linux (distingue mayúsculas): cuidar la capitalización de rutas y de referencias entre proyectos.
@@ -130,6 +132,19 @@ Patrón de consumo: `ServiceBusReciveService` → `IMediator.Publish(ProcessEven
 - Un mensaje ignorado (duplicado, tardío, sin `CorrelationId`) se completa y se registra con `CorrelationId`, `MessageType` y `Reason` (constantes `IgnoredMessageReasonConstants`).
 - Diseño y decisiones: `specs/001-idempotent-transfer-processing/` (`research.md`, `data-model.md`).
 
+## Resiliencia en el consumo (feature 002)
+
+Detalle y decisiones: `specs/002-resilient-message-consumption/` (`contracts/message-handling.md`, `research.md`). El código vive en `Application/Resilience/` de cada servicio y está **duplicado a propósito** en los cuatro (la constitución prohíbe un proyecto compartido).
+
+- Los receptores usan `AutoCompleteMessages = false`; `ResilientMessageProcessor.HandleAsync` decide completar, reprogramar o apartar cada mensaje.
+- **Tres clases de error**: *venenoso* (cuerpo vacío o ilegible, sin `CorrelationId`, `CorrelationId` de más de 64 caracteres, campo con tipo incorrecto) → DLQ en la primera entrega con motivo `PoisonMessage`; *permanente de datos* (SQL 515/547/8115/8152) → lo resuelve `ProcessService` (emite `*-failed` y completa); *transitorio* (todo lo demás) → reintento. Violación de unicidad (2601/2627) = "ya procesado".
+- **Reintentos**: se programa una copia con `ScheduleMessageAsync` (mismo `Subject`, propiedad `RetryAttempt`) y **después** se completa el original. Hasta 5 reintentos con espera `5 s·3^(n−1)`, tope 300 s, ±20 % (`RetryPolicy`). Un cierre ordenado del servicio no reprograma ni cuenta como fallo.
+- **Agotados los reintentos**: se compensa y el mensaje va a la DLQ con motivo `RetriesExhausted` (`Attempts = 6`, último error en el detalle, máx. 1 024 caracteres). Si no se pudo emitir el evento de fallo, el motivo es `CompensationFailed`.
+- **Compensación solo del primer paso**: `transaction-initiated` → `transaction-failed`, `balance-initiated` → `balance-failed`, `transfer-initiated` → `transfer-failed`. Antes de emitir, `FailureCompensator` comprueba que su propia BD **no** tenga registro del `CorrelationId` (si lo tiene, no emite: la saga ya avanzó); si la BD no responde, emite. El payload es `{CorrelationId, CustomerId}` y **omite** `CustomerId` si no se pudo leer (un `null` explícito haría que el consumidor lo rechace como venenoso). Los manejadores que solo actualizan estado no compensan: se registran y se apartan.
+- `ProcessError` **solo registra** (`ProcessorErrorHandler`): no aparta, completa ni compensa.
+- Cada mensaje apartado o reprogramado se registra con `CorrelationId`, `MessageId`, `MessageType`, `Attempt`, `Classification` y `Reason`.
+- Mensajes manuales para probar (cuerpo inválido, `RetryAttempt`): `infra/local/duplicate-test` con `--raw`.
+
 ## Principios EDD a respetar al cambiar código
 
 - Servicios desacoplados: nada de referencias de proyecto ni llamadas HTTP entre servicios; solo eventos.
@@ -139,7 +154,7 @@ Patrón de consumo: `ServiceBusReciveService` → `IMediator.Publish(ProcessEven
 
 ## Deuda técnica conocida (ver README)
 
-`ProcessError` vacío, sin dead-letter handling ni Outbox, reintentos inmediatos sin espera (un error transitorio agota las entregas y va a dead-letter sin emitir el evento de fallo), Balance y Notification sin idempotencia, destinatario de email hardcodeado en Notification, senders creados por mensaje sin dispose, Gateway sin auth ni `CorrelationId` en la respuesta, `Transfer/External/SendGridEmail` vacío, pruebas automáticas solo en Transfer y Transaction. Si el cambio toca estas zonas, señálala, pero no la arregles sin que se pida.
+sin Outbox, manejadores de solo-actualización (p. ej. `balance-confirmed`, `transfer-confirmed-balance`) sin evento de fallo al agotar los reintentos (solo se registran y van a la DLQ), sin alerta de longitud de la DLQ ni herramienta de reproceso, Balance y Notification sin idempotencia, destinatario de email hardcodeado en Notification, senders creados por mensaje sin dispose, Gateway sin auth ni `CorrelationId` en la respuesta, `Transfer/External/SendGridEmail` vacío. Si el cambio toca estas zonas, señálala, pero no la arregles sin que se pida.
 
 ## Estilo
 

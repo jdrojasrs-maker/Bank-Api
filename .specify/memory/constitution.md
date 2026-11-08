@@ -1,20 +1,19 @@
 <!--
 SYNC IMPACT REPORT (borrador de revisión; eliminar antes de versionar el archivo)
-Version change: 1.0.0 → 1.1.0 (MINOR: se amplía materialmente la guía de "Flujo de desarrollo" y de la revisión de cumplimiento)
+Version change: 1.1.0 → 1.2.0 (MINOR: se amplía materialmente la regla de integración continua del "Flujo de desarrollo")
 Modified principles: ninguno (los cinco principios no cambian)
 Modified sections:
-  - Flujo de desarrollo: nueva regla de integración continua (checks obligatorios y prohibición de relajarlos)
-  - Governance / Revisión de cumplimiento: ahora también verifica que la integración continua esté en verde
+  - Flujo de desarrollo: los checks exigidos pasan de 3 a 5 (se añaden "Tests (Balance)" y "Tests (Notification)")
 Added sections: ninguna
 Removed sections: ninguna
 Templates requiring updates: ninguna modificada aquí (las plantillas leen la constitución en tiempo de ejecución).
 Follow-up TODOs:
-  - Activar en GitHub la protección de main y develop exigiendo los checks "Build", "Tests (Transfer)" y
-    "Tests (Transaction)" (ajuste de la interfaz web; no es un archivo del repo).
+  - Ajustar en GitHub la protección de main y develop para exigir también "Tests (Balance)" y "Tests (Notification)"
+    (ajuste de la interfaz web; solo se pueden elegir tras ejecutarse una vez).
   - Brechas conocidas frente a los principios (deuda registrada, no corregida aquí):
-    * III: la compensación cubre solo el primer paso de Balance, Transfer y Transaction; falta
-      emitir el evento de fallo al agotar los reintentos de errores transitorios y en los
-      manejadores que solo actualizan estado.
+    * III: cerradas para los primeros pasos (Balance, Transfer y Transaction compensan también al agotar los
+      reintentos y ante mensajes venenosos con CorrelationId legible). Restan los manejadores que solo
+      actualizan estado, que se registran y apartan a la DLQ sin compensar (no existe evento de fallo definido).
     * II: Balance y Notification aún no son idempotentes (Transfer y Transaction sí).
 -->
 # Bank Constitution
@@ -92,9 +91,9 @@ con inyección de fallos ya demostraron los defectos y ahora deben automatizarse
 - Los commits y pushes solo se realizan cuando el responsable del repositorio lo indica de forma
   explícita.
 - Todo cambio DEBE integrarse en `main` o `develop` mediante pull request con la integración continua
-  (`.github/workflows/ci.yml`: compilación de `Bank.slnx` y pruebas de Transfer y Transaction) en verde.
-  Los checks `Build`, `Tests (Transfer)` y `Tests (Transaction)` DEBEN exigirse en la protección de
-  ramas del repositorio.
+  (`.github/workflows/ci.yml`: compilación de `Bank.slnx` y pruebas de Transfer, Transaction, Balance y
+  Notification) en verde. Los checks `Build`, `Tests (Transfer)`, `Tests (Transaction)`,
+  `Tests (Balance)` y `Tests (Notification)` DEBEN exigirse en la protección de ramas del repositorio.
 - NO DEBE desactivarse, omitirse ni relajarse un check de integración continua para lograr que un
   cambio pase; si un check falla, se corrige la causa.
 
@@ -114,4 +113,4 @@ de desarrollo en curso y NO DEBE contradecirla.
   integración continua esté en verde. Cualquier excepción DEBE justificarse por escrito en el propio
   cambio y registrarse como deuda técnica.
 
-**Version**: 1.1.0 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-05
+**Version**: 1.2.0 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-08
