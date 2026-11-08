@@ -9,6 +9,7 @@ public class FakeFailureCompensator : IFailureCompensator
     private readonly List<(string Body, string MessageType)> _calls = new();
 
     public bool Result { get; set; } = true;
+    public Exception? Throw { get; set; }
 
     public IReadOnlyList<(string Body, string MessageType)> Calls
     {
@@ -18,6 +19,8 @@ public class FakeFailureCompensator : IFailureCompensator
     public Task<bool> CompensateAsync(string body, string messageType, CancellationToken ct)
     {
         lock (_lock) { _calls.Add((body, messageType)); }
+        if (Throw != null)
+            throw Throw;
         return Task.FromResult(Result);
     }
 }

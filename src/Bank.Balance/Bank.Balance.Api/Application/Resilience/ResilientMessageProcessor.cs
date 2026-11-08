@@ -38,15 +38,17 @@ public class ResilientMessageProcessor
                 check.CorrelationId, actions, ct);
             return;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // Cierre ordenado: el mensaje queda en la cola y se reentrega, no se reprograma.
             if (ct.IsCancellationRequested)
                 throw;
 
-            // Sin reintentos disponibles se relanza; el agotamiento (compensar y DLQ) llega con la historia 3.
             if (message.RetryAttempt >= RetryConstants.MAX_RETRIES)
-                throw;
+            {
+                await ExhaustAsync(message, check.CorrelationId, ex, actions, ct);
+                return;
+            }
 
             // Primero se programa la copia y después se completa el original: si algo falla en medio, se reentrega
             // (duplicado posible, nunca pérdida).
@@ -68,10 +70,68 @@ public class ResilientMessageProcessor
             message.MessageType, DeadLetterReasonConstants.POISON_MESSAGE, correlationId, message.MessageId,
             message.RetryAttempt + 1, "Poison", detail);
 
-        if (correlationId != null)
-            await _compensator.CompensateAsync(message.Body, message.MessageType, ct);
+        var compensationError = await TryCompensateAsync(message, correlationId, ct);
+        if (compensationError != null)
+        {
+            await DeadLetterCompensationFailedAsync(message, correlationId, compensationError, detail, actions, ct);
+            return;
+        }
 
         await actions.DeadLetterAsync(DeadLetterReasonConstants.POISON_MESSAGE, detail, correlationId,
             message.RetryAttempt + 1, ct);
     }
+
+    private async Task ExhaustAsync(IncomingMessage message, string? correlationId, Exception error,
+        IMessageActions actions, CancellationToken ct)
+    {
+        var attempts = message.RetryAttempt + 1;
+        var detail = Truncate($"Reintentos agotados tras {attempts} intentos. Último error: {error.GetType().Name}: {error.Message}");
+
+        _logger.LogError(error, "Mensaje {MessageType} apartado a la DLQ ({Reason}); CorrelationId {CorrelationId}; " +
+            "MessageId {MessageId}; Attempt {Attempt}; Classification {Classification}",
+            message.MessageType, DeadLetterReasonConstants.RETRIES_EXHAUSTED, correlationId, message.MessageId,
+            attempts, "Transient");
+
+        var compensationError = await TryCompensateAsync(message, correlationId, ct);
+        if (compensationError != null)
+        {
+            await DeadLetterCompensationFailedAsync(message, correlationId, compensationError, detail, actions, ct);
+            return;
+        }
+
+        await actions.DeadLetterAsync(DeadLetterReasonConstants.RETRIES_EXHAUSTED, detail, correlationId, attempts, ct);
+    }
+
+    // null si compensó o no aplica; la excepción si no se pudo emitir el evento de fallo.
+    private async Task<Exception?> TryCompensateAsync(IncomingMessage message, string? correlationId, CancellationToken ct)
+    {
+        if (correlationId == null)
+            return null;
+
+        try
+        {
+            await _compensator.CompensateAsync(message.Body, message.MessageType, ct);
+            return null;
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            return ex;
+        }
+    }
+
+    private async Task DeadLetterCompensationFailedAsync(IncomingMessage message, string? correlationId,
+        Exception compensationError, string originalDetail, IMessageActions actions, CancellationToken ct)
+    {
+        var attempts = message.RetryAttempt + 1;
+        _logger.LogError(compensationError, "No se pudo compensar el mensaje {MessageType} ({Reason}); " +
+            "CorrelationId {CorrelationId}; MessageId {MessageId}; Attempt {Attempt}",
+            message.MessageType, DeadLetterReasonConstants.COMPENSATION_FAILED, correlationId, message.MessageId, attempts);
+
+        var detail = Truncate($"No se pudo emitir el evento de fallo: {compensationError.GetType().Name}: " +
+            $"{compensationError.Message}. Error original: {originalDetail}");
+        await actions.DeadLetterAsync(DeadLetterReasonConstants.COMPENSATION_FAILED, detail, correlationId, attempts, ct);
+    }
+
+    private static string Truncate(string detail) =>
+        detail.Length > RetryConstants.MAX_DETAIL_LENGTH ? detail[..RetryConstants.MAX_DETAIL_LENGTH] : detail;
 }

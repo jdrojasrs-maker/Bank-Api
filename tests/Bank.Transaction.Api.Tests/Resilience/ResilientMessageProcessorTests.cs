@@ -30,16 +30,4 @@ public class ResilientMessageProcessorTests
         Assert.Equal((message.Body, message.MessageType), calls[0]);
         Assert.Equal(new[] { "Complete" }, actions.Calls);
     }
-
-    [Fact]
-    public async Task Process_throws_with_no_retries_left_propagates_exception_and_does_not_complete()
-    {
-        var processor = Create((_, _, _) => throw new InvalidOperationException("boom"));
-        var actions = new FakeMessageActions();
-
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => processor.HandleAsync(Message() with { RetryAttempt = 5 }, actions, CancellationToken.None));
-
-        Assert.Empty(actions.Calls);
-    }
 }
