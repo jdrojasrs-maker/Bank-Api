@@ -42,7 +42,12 @@ public class ResilientMessageProcessor
         {
             // Cierre ordenado: el mensaje queda en la cola y se reentrega, no se reprograma.
             if (ct.IsCancellationRequested)
+            {
+                _logger.LogDebug("Procesamiento de {MessageType} interrumpido por cierre ordenado; CorrelationId {CorrelationId}; " +
+                    "MessageId {MessageId}; Attempt {Attempt}", message.MessageType, check.CorrelationId, message.MessageId,
+                    message.RetryAttempt + 1);
                 throw;
+            }
 
             if (message.RetryAttempt >= RetryConstants.MAX_RETRIES)
             {
@@ -54,6 +59,10 @@ public class ResilientMessageProcessor
             // (duplicado posible, nunca pérdida).
             var nextAttempt = message.RetryAttempt + 1;
             var delay = RetryPolicy.NextDelay(nextAttempt, _random);
+            _logger.LogWarning(ex, "Mensaje {MessageType} falló (transitorio) en el intento {Attempt}; reintento en {DelaySeconds}s; " +
+                "CorrelationId {CorrelationId}; MessageId {MessageId}; Classification {Classification}",
+                message.MessageType, message.RetryAttempt + 1, Math.Round(delay.TotalSeconds, 1), check.CorrelationId,
+                message.MessageId, "Transient");
             await actions.ScheduleRetryAsync(nextAttempt, delay, ct);
             await actions.CompleteAsync(ct);
             return;

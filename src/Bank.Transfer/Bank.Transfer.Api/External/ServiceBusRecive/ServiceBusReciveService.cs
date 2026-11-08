@@ -12,10 +12,13 @@ public class ServiceBusReciveService : BackgroundService
     private readonly List<ServiceBusProcessor> _processors;
     private readonly Azure.Messaging.ServiceBus.ServiceBusSender _retrySender;
     private readonly ResilientMessageProcessor _messageProcessor;
+    private readonly ILogger<ServiceBusReciveService> _receiverLogger;
 
     public ServiceBusReciveService(IConfiguration configuration, IMediator mediator,
-        IFailureCompensator compensator, ILogger<ResilientMessageProcessor> logger)
+        IFailureCompensator compensator, ILogger<ResilientMessageProcessor> logger,
+        ILogger<ServiceBusReciveService> receiverLogger)
     {
+        _receiverLogger = receiverLogger;
         _client = new ServiceBusClient(configuration["SERVICEBUSCONSTR"]);
         _retrySender = _client.CreateSender(configuration["SERVICEBUSTOPIC"]);
         _messageProcessor = new ResilientMessageProcessor(
@@ -66,9 +69,11 @@ public class ServiceBusReciveService : BackgroundService
             ? value switch { int i => i, long l => (int)l, _ => 0 }
             : 0;
 
+    // Solo registra: el error del procesador no pertenece a un mensaje concreto, así que no aparta ni completa nada.
     private Task ProcessError(ProcessErrorEventArgs args)
     {
-        // Handle error
+        ProcessorErrorHandler.Log(_receiverLogger, args.Exception, args.ErrorSource.ToString(), args.EntityPath,
+            args.FullyQualifiedNamespace, args.CancellationToken.IsCancellationRequested);
         return Task.CompletedTask;
     }
 
