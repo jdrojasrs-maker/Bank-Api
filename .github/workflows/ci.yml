@@ -1,8 +1,10 @@
 name: CI
 
-# Integración continua: compila toda la solución y ejecuta las pruebas de Transfer y Transaction.
-# Las pruebas levantan su propio SQL Server en contenedor (Testcontainers), así que no necesitan secretos.
-# Checks que deben exigirse en la protección de ramas: "Build", "Tests (Transfer)" y "Tests (Transaction)".
+# Integración continua: compila toda la solución y ejecuta las pruebas de Transfer, Transaction, Balance y Notification.
+# Las pruebas de Transfer, Transaction y Balance levantan su propio SQL Server en contenedor (Testcontainers) con el Docker
+# del runner; las de Notification no usan base de datos. Ninguna necesita secretos.
+# Checks que deben exigirse en la protección de ramas: "Build", "Tests (Transfer)", "Tests (Transaction)",
+# "Tests (Balance)" y "Tests (Notification)".
 
 on:
   pull_request:
@@ -66,7 +68,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [Transfer, Transaction]
+        service: [Transfer, Transaction, Balance, Notification]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -89,7 +91,7 @@ jobs:
       - name: Compilar (Release)
         run: dotnet build tests/Bank.${{ matrix.service }}.Api.Tests --configuration Release --no-restore
 
-      # Docker viene preinstalado en ubuntu-latest; Testcontainers descarga y arranca SQL Server 2022.
+      # Docker viene preinstalado en ubuntu-latest; Testcontainers descarga y arranca SQL Server 2022 (no aplica a Notification).
       - name: Ejecutar pruebas
         run: >
           dotnet test tests/Bank.${{ matrix.service }}.Api.Tests
