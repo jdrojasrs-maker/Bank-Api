@@ -55,7 +55,7 @@ Los mismos eventos y payloads que ya emiten los caminos permanentes. **Sin cambi
 | Notification | — | — | No tiene evento de fallo: solo registra y aparta |
 | Suscripciones que solo actualizan estado | — | — | Desviación justificada (hallazgo 6): solo registran y apartan |
 
-`CustomerId` puede ir nulo si no se pudo leer.
+`CustomerId` se omite del payload si no se pudo leer: los consumidores lo declaran `int` y un `null` explícito haría que rechazaran el evento como venenoso (hallado en la prueba real de US1).
 
 **Regla de emisión (FR-016)**: el evento de fallo se emite **solo si** el servicio no tiene ya un registro del `CorrelationId` en su
 propia base de datos (Transaction: `Transaction`; Balance: `Balance`; Transfer: `TransferRequest`) o si no puede consultarla.

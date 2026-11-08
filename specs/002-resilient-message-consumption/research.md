@@ -148,7 +148,7 @@ Una clase `FailureCompensator` por servicio (con `IFailureCompensator.Compensate
 | Resto de suscripciones (solo actualizan estado) | — | — (desviación justificada, hallazgo 6) | — |
 
 **[CÓDIGO]** Los payloads coinciden con los que ya emiten los caminos permanentes en cada `ProcessService`.
-`CustomerId` se lee de forma tolerante: si falta, viaja nulo.
+`CustomerId` se lee de forma tolerante: si falta o no es un entero, se omite del payload (un `null` explícito lo rechazarían los consumidores, que lo leen como `int`).
 
 **Por qué una clase aparte y no un método de `IProcessService`**: `ProcessService` queda intacto (SC-007) y la compensación tiene
 una única responsabilidad. Precio de la regla de seguridad: **las pruebas del compensador necesitan SQL Server real**, también en

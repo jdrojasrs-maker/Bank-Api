@@ -35,6 +35,15 @@ public class BalanceHarness
         return correlationId;
     }
 
+    public async Task ExecuteSqlAsync(string sql)
+    {
+        await using var connection = new SqlConnection(ConnectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync();
+    }
+
     public async Task<T> ScalarAsync<T>(string sql)
     {
         await using var connection = new SqlConnection(ConnectionString);

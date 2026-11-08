@@ -19,7 +19,7 @@ builder.Services.AddScoped<IProcessService, ProcessService>();
 builder.Services.AddSingleton<IServiceBusSenderService, ServiceBusSenderService>();
 
 
-builder.Services.AddSingleton<IFailureCompensator, NullFailureCompensator>();
+builder.Services.AddSingleton<IFailureCompensator, FailureCompensator>();
 builder.Services.AddHostedService<ServiceBusReciveService>();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 
