@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Procesamiento idempotente de transferencias
+# Specification Quality Checklist: Idempotent transfer processing
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-11-03
@@ -31,7 +31,7 @@
 
 ## Notes
 
-- Validación realizada en 1 iteración; todos los elementos pasan.
-- Términos del dominio como `transfer-initiated`, `CorrelationId`, `Pending`, `Completed` y `Canceled` aparecen porque los define la descripción del usuario y el vocabulario del negocio; no se consideran detalles de implementación. No se menciona ninguna tecnología (mensajería, base de datos, índices, bibliotecas).
-- No se necesitó ningún marcador [NEEDS CLARIFICATION]: las decisiones con varias interpretaciones razonables se documentaron en Assumptions (contenido distinto con el mismo identificador, estados finales inmutables, alcance de la emisión única).
-- Puntos que conviene revisar con `/speckit-clarify` si se desea afinar: qué hacer con un mensaje que contradice un estado final (hoy: ignorar y registrar) y el tiempo de retención de las constancias de mensajes ignorados.
+- Validation done in 1 iteration; all items pass.
+- Domain terms such as `transfer-initiated`, `CorrelationId`, `Pending`, `Completed` and `Canceled` appear because they are defined by the user's description and the business vocabulary; they are not considered implementation details. No technology is mentioned (messaging, database, indexes, libraries).
+- No [NEEDS CLARIFICATION] marker was needed: the decisions with several reasonable interpretations were documented in Assumptions (different content with the same identifier, immutable final states, scope of single emission).
+- Points worth reviewing with `/speckit-clarify` if more refinement is wanted: what to do with a message that contradicts a final state (today: ignore and record) and the retention period of the ignored-message records.

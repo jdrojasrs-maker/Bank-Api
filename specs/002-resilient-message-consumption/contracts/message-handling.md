@@ -1,22 +1,22 @@
-# Contrato: tratamiento de mensajes (venenosos, reintentos y DLQ)
+# Contract: message handling (poison messages, retries and DLQ)
 
-Esta feature **no cambia** ningún nombre de evento ni payload. Solo se añaden convenciones sobre cómo se reprograman, se apartan y
-se registran los mensajes. Aplica a los cuatro servicios que consumen: Transaction, Balance, Transfer y Notification.
+This feature **does not change** any event name or payload. It only adds conventions about how messages are rescheduled, set aside
+and logged. It applies to the four services that consume: Transaction, Balance, Transfer and Notification.
 
-## 1. Mensaje reprogramado (reintento)
+## 1. Rescheduled message (retry)
 
-Un reintento es un mensaje **nuevo** publicado en el mismo tópico (`SERVICEBUSTOPIC`) con entrega programada.
+A retry is a **new** message published to the same topic (`SERVICEBUSTOPIC`) with scheduled delivery.
 
-| Elemento | Valor |
+| Element | Value |
 |---|---|
-| Cuerpo | Idéntico al original |
-| `Subject` | El mismo que el original (el nombre del evento ⇒ llega a la misma suscripción) |
-| `ContentType` | El mismo que el original |
-| Propiedades de aplicación | Las del original más `RetryAttempt` (entero) |
-| `RetryAttempt` | Intento anterior + 1; el original no la tiene (= 0) |
-| Entrega | `ScheduledEnqueueTimeUtc` = ahora + espera (ver tabla) |
+| Body | Identical to the original |
+| `Subject` | The same as the original (the event name ⇒ it reaches the same subscription) |
+| `ContentType` | The same as the original |
+| Application properties | Those of the original plus `RetryAttempt` (integer) |
+| `RetryAttempt` | Previous attempt + 1; the original does not have it (= 0) |
+| Delivery | `ScheduledEnqueueTimeUtc` = now + delay (see table) |
 
-| Reintento | Espera nominal | Rango con variación ±20 % |
+| Retry | Nominal delay | Range with ±20 % variation |
 |:-:|--:|--:|
 | 1 | 5 s | 4 – 6 s |
 | 2 | 15 s | 12 – 18 s |
@@ -24,70 +24,72 @@ Un reintento es un mensaje **nuevo** publicado en el mismo tópico (`SERVICEBUST
 | 4 | 135 s | 108 – 162 s |
 | 5 | 300 s | 240 – 360 s |
 
-**Orden**: se programa la copia y **después** se completa el original (un duplicado es preferible a una pérdida; los consumidores
-son idempotentes — ver research.md R1 y R9).
+**Order**: the copy is scheduled and the original is completed **afterwards** (a duplicate is preferable to a loss; consumers
+are idempotent — see research.md R1 and R9).
 
-## 2. Mensaje apartado a la DLQ
+## 2. Message set aside to the DLQ
 
-| Motivo (`DeadLetterReason`) | Cuándo | Compensa con `*-failed` |
+| Reason (`DeadLetterReason`) | When | Compensates with `*-failed` |
 |---|---|---|
-| `PoisonMessage` | Cuerpo vacío, JSON ilegible o `null`, sin `CorrelationId` o con más de 64 caracteres, o error de deserialización al procesar (campo con tipo incorrecto) | Sí, si el `CorrelationId` es legible y el servicio tiene evento de fallo en ese paso |
-| `RetriesExhausted` | Un fallo transitorio con `RetryAttempt = 5` | Sí, en los primeros pasos (ver §3) |
-| `CompensationFailed` | No se pudo emitir el `*-failed` al compensar | No (es la razón por la que se aparta) |
+| `PoisonMessage` | Empty body, unreadable or `null` JSON, no `CorrelationId` or one longer than 64 characters, or deserialization error while processing (field with the wrong type) | Yes, if the `CorrelationId` is readable and the service has a failure event at that step |
+| `RetriesExhausted` | A transient failure with `RetryAttempt = 5` | Yes, in the first steps (see §3) |
+| `CompensationFailed` | The `*-failed` could not be emitted when compensating | No (it is the reason it is set aside) |
 
-| Campo | Contenido |
+| Field | Content |
 |---|---|
-| `DeadLetterErrorDescription` | Detalle legible, **máximo 1 024 caracteres** (se trunca) |
-| Propiedad `CorrelationId` | El `CorrelationId` leído del cuerpo, si existe |
-| Propiedad `Attempts` | Número de ejecuciones realizadas (`RetryAttempt + 1`) |
+| `DeadLetterErrorDescription` | Readable detail, **maximum 1,024 characters** (truncated) |
+| `CorrelationId` property | The `CorrelationId` read from the body, if it exists |
+| `Attempts` property | Number of executions made (`RetryAttempt + 1`) |
 
-Un mensaje apartado **no vuelve a entregarse** automáticamente. Reprocesarlo es una operación manual (fuera de alcance).
+A message set aside is **not redelivered** automatically. Reprocessing it is a manual operation (out of scope).
 
-## 3. Eventos de fallo emitidos al compensar
+## 3. Failure events emitted when compensating
 
-Los mismos eventos y payloads que ya emiten los caminos permanentes. **Sin cambios de contrato.**
+The same events and payloads that the permanent paths already emit. **No contract changes.**
 
-| Servicio | Suscripción de entrada | Evento emitido | Payload |
+| Service | Input subscription | Event emitted | Payload |
 |---|---|---|---|
 | Transaction | `transaction-initiated` | `transaction-failed` | `{ CorrelationId, CustomerId }` |
 | Balance | `balance-initiated` | `balance-failed` | `{ CorrelationId, CustomerId }` |
 | Transfer | `transfer-initiated` | `transfer-failed` | `{ CorrelationId, CustomerId }` |
-| Notification | — | — | No tiene evento de fallo: solo registra y aparta |
-| Suscripciones que solo actualizan estado | — | — | Desviación justificada (hallazgo 6): solo registran y apartan |
+| Notification | — | — | It has no failure event: it only logs and sets aside |
+| Subscriptions that only update state | — | — | Justified deviation (finding 6): they only log and set aside |
 
-`CustomerId` se omite del payload si no se pudo leer: los consumidores lo declaran `int` y un `null` explícito haría que rechazaran el evento como venenoso (hallado en la prueba real de US1).
+`CustomerId` is omitted from the payload if it could not be read: consumers declare it `int` and an explicit `null` would make them reject the event as poison (found in the real test of US1).
 
-**Regla de emisión (FR-016)**: el evento de fallo se emite **solo si** el servicio no tiene ya un registro del `CorrelationId` en su
-propia base de datos (Transaction: `Transaction`; Balance: `Balance`; Transfer: `TransferRequest`) o si no puede consultarla.
-Con registro existente el mensaje se aparta sin emitir. Motivo: `balance-failed` y `transfer-failed` cancelan en Transaction toda
-saga `Pending`, y `transaction-failed` genera un correo de fallo en Notification sin comprobar estado.
+**Emission rule (FR-016)**: the failure event is emitted **only if** the service does not already have a record of the `CorrelationId` in its
+own database (Transaction: `Transaction`; Balance: `Balance`; Transfer: `TransferRequest`) or if it cannot query it.
+With an existing record the message is set aside without emitting. Reason: `balance-failed` and `transfer-failed` cancel any
+`Pending` saga in Transaction, and `transaction-failed` generates a failure email in Notification without checking state.
 
-## 4. Contrato de registro
+## 4. Logging contract
 
-Cada mensaje apartado, reprogramado o fallido produce una entrada con estos parámetros estructurados (nombres fijos):
+Each message set aside, rescheduled or failed produces an entry with these structured parameters (fixed names):
 
-| Parámetro | Descripción |
+| Parameter | Description |
 |---|---|
-| `CorrelationId` | Del cuerpo; `null` y explícito si no se pudo leer |
-| `MessageId` | Identificador del mensaje en el broker (siempre disponible) |
-| `MessageType` | Nombre de la suscripción/evento (p. ej. `transfer-initiated`) |
-| `Attempt` | Número de ejecución actual (`RetryAttempt + 1`) |
+| `CorrelationId` | From the body; `null` and explicit if it could not be read |
+| `MessageId` | Message identifier in the broker (always available) |
+| `MessageType` | Subscription/event name (e.g. `transfer-initiated`) |
+| `Attempt` | Current execution number (`RetryAttempt + 1`) |
 | `Classification` | `Poison` · `Permanent` · `Transient` |
-| `Reason` | Motivo de apartado cuando aplica (`PoisonMessage`, `RetriesExhausted`, `CompensationFailed`) |
+| `Reason` | Set-aside reason when it applies (`PoisonMessage`, `RetriesExhausted`, `CompensationFailed`) |
 
-| Situación | Nivel | Plantilla (resumen) |
+The templates in the last column are the runtime strings, which are still in Spanish in the code; the rest of the table is descriptive.
+
+| Situation | Level | Template (summary) |
 |---|---|---|
-| Mensaje apartado | `Error` | "Mensaje {MessageType} apartado a la DLQ ({Reason}); CorrelationId {CorrelationId}…" |
-| Fallo transitorio con reintento programado | `Warning` | "Mensaje {MessageType} falló (transitorio); reintento {Attempt} en {DelaySeconds}s; CorrelationId {CorrelationId}…" |
-| Compensación omitida: ya existe registro del `CorrelationId` (FR-016) | `Warning` | "Compensación omitida para {MessageType}: ya hay registro; CorrelationId {CorrelationId}" con `Reason = "AlreadyRegistered"` |
-| Compensación emitida | `Information` | "Evento de fallo {Event} emitido para {MessageType}; CorrelationId {CorrelationId}" |
-| No se pudo consultar el registro al decidir compensar | `Warning` | "No se pudo comprobar el registro de {CorrelationId}; se emite {Event}" + excepción |
-| Error del procesador (`ProcessError`) | `Error` | "Error del procesador {ErrorSource} en {EntityPath}" + excepción |
-| Error del procesador por apagado ordenado | `Debug` | Misma plantilla; no se trata como fallo (FR-014) |
-| Mensaje ya ignorado por `ProcessService` | `Warning` | Sin cambios (plantilla existente con `Reason`) |
+| Message set aside | `Error` | "Mensaje {MessageType} apartado a la DLQ ({Reason}); CorrelationId {CorrelationId}…" |
+| Transient failure with a retry scheduled | `Warning` | "Mensaje {MessageType} falló (transitorio); reintento {Attempt} en {DelaySeconds}s; CorrelationId {CorrelationId}…" |
+| Compensation skipped: a record of the `CorrelationId` already exists (FR-016) | `Warning` | "Compensación omitida para {MessageType}: ya hay registro; CorrelationId {CorrelationId}" with `Reason = "AlreadyRegistered"` |
+| Compensation emitted | `Information` | "Evento de fallo {Event} emitido para {MessageType}; CorrelationId {CorrelationId}" |
+| The record could not be queried when deciding to compensate | `Warning` | "No se pudo comprobar el registro de {CorrelationId}; se emite {Event}" + exception |
+| Processor error (`ProcessError`) | `Error` | "Error del procesador {ErrorSource} en {EntityPath}" + exception |
+| Processor error due to graceful shutdown | `Debug` | Same template; it is not treated as a failure (FR-014) |
+| Message already ignored by `ProcessService` | `Warning` | Unchanged (existing template with `Reason`) |
 
-## 5. Lo que no cambia
+## 5. What does not change
 
-- Nombres de evento, `Subject`, payloads y `infra/local/Config.json` (suscripciones, reglas, `MaxDeliveryCount`, `LockDuration`, TTL).
-- Las constantes de `IgnoredMessageReasonConstants` y el comportamiento de mensajes ignorados dentro de `ProcessService`.
-- El camino permanente de datos (SQL 515/547/8115/8152): compensa y completa, sin reintento.
+- Event names, `Subject`, payloads and `infra/local/Config.json` (subscriptions, rules, `MaxDeliveryCount`, `LockDuration`, TTL).
+- The `IgnoredMessageReasonConstants` constants and the behavior of ignored messages inside `ProcessService`.
+- The permanent data path (SQL 515/547/8115/8152): it compensates and completes, with no retry.

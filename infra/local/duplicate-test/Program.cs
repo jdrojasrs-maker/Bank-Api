@@ -1,16 +1,16 @@
 using Azure.Messaging.ServiceBus;
 using System.Text.Json;
 
-// Herramienta manual para validar la idempotencia: publica N copias del mismo transfer-initiated (mismo CorrelationId).
-// Uso: dotnet run -- <correlationId> [copias=3] [monto=1500] [evento=transfer-initiated] [clienteId=7] [origen] [destino]
-// Para repetir un mensaje real hay que usar el mismo monto, cliente y cuentas; si no, el servicio lo trata como contenido distinto.
-// Con los servicios en marcha, Transfer debe registrar una sola transferencia y emitir un solo resultado.
-// Cadena de conexión: variable de entorno SERVICEBUSCONSTR, o la del emulador local (no es un secreto).
+// Manual tool to validate idempotency: publishes N copies of the same transfer-initiated (same CorrelationId).
+// Usage: dotnet run -- <correlationId> [copies=3] [amount=1500] [event=transfer-initiated] [customerId=7] [source] [destination]
+// To repeat a real message you must use the same amount, customer and accounts; otherwise the service treats it as different content.
+// With the services running, Transfer must record a single transfer and emit a single result.
+// Connection string: SERVICEBUSCONSTR environment variable, or the local emulator one (not a secret).
 //
-// Modo crudo (mensajes venenosos y reintentos): dotnet run -- --raw <evento> <cuerpo> [retryAttempt]
-//   Publica el cuerpo tal cual, sin validarlo, con el Subject indicado; sirve para enviar cuerpos inválidos ("", "null",
-//   "{ no es json", sin CorrelationId...). retryAttempt añade la propiedad RetryAttempt (p. ej. 5 para simular reintentos agotados).
-//   Ejemplo: dotnet run -- --raw balance-initiated "{\"CorrelationId\":\"abc\",\"CustomerId\":\"x\"}"
+// Raw mode (poison messages and retries): dotnet run -- --raw <event> <body> [retryAttempt]
+//   Publishes the body as is, without validating it, with the given Subject; useful for sending invalid bodies ("", "null",
+//   "{ no es json", no CorrelationId...). retryAttempt adds the RetryAttempt property (e.g. 5 to simulate exhausted retries).
+//   Example: dotnet run -- --raw balance-initiated "{\"CorrelationId\":\"abc\",\"CustomerId\":\"x\"}"
 
 const string DefaultConnection =
     "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";

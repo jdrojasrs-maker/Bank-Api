@@ -1,4 +1,4 @@
-# Specification Quality Checklist: Consumo resiliente de mensajes
+# Specification Quality Checklist: Resilient message consumption
 
 **Purpose**: Validate specification completeness and quality before proceeding to planning
 **Created**: 2026-11-07
@@ -31,7 +31,7 @@
 
 ## Notes
 
-- Validado en la primera iteración. Se usan los términos de dominio del proyecto (DLQ, `CorrelationId`, eventos `*-failed`) porque forman parte del vocabulario del negocio y de la constitución, no de una tecnología concreta.
-- La política exacta de reintentos (número de intentos y esperas) se deja deliberadamente a la planificación; la spec solo fija el mínimo (varios reintentos, espera creciente, ventana de minutos).
-- Decisión de alcance a revisar en `/speckit-plan`: Balance y Notification no son idempotentes (hallazgo 5); los reintentos con espera no empeoran su situación actual, pero conviene señalarlo como riesgo.
-- Sin marcadores [NEEDS CLARIFICATION]: los puntos abiertos (compensación al agotar intentos, alcance a los cuatro servicios) se resolvieron con la constitución (Principio III) y con valores por defecto documentados en Assumptions.
+- Validated on the first iteration. The project's domain terms (DLQ, `CorrelationId`, `*-failed` events) are used because they are part of the business vocabulary and of the constitution, not of a specific technology.
+- The exact retry policy (number of attempts and waits) is deliberately left to planning; the spec only sets the minimum (several retries, growing wait, a window of minutes).
+- Scope decision to review in `/speckit-plan`: Balance and Notification are not idempotent (finding 5); retries with delay do not worsen their current situation, but it is worth pointing out as a risk.
+- No [NEEDS CLARIFICATION] markers: the open points (compensation when attempts are exhausted, scope to the four services) were resolved with the constitution (Principle III) and with default values documented in Assumptions.

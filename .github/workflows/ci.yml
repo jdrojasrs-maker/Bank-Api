@@ -1,9 +1,9 @@
 name: CI
 
-# Integración continua: compila toda la solución y ejecuta las pruebas de Transfer, Transaction, Balance y Notification.
-# Las pruebas de Transfer, Transaction y Balance levantan su propio SQL Server en contenedor (Testcontainers) con el Docker
-# del runner; las de Notification no usan base de datos. Ninguna necesita secretos.
-# Checks que deben exigirse en la protección de ramas: "Build", "Tests (Transfer)", "Tests (Transaction)",
+# Continuous integration: builds the whole solution and runs the Transfer, Transaction, Balance and Notification tests.
+# The Transfer, Transaction and Balance tests start their own SQL Server in a container (Testcontainers) with the runner's
+# Docker; the Notification tests do not use a database. None of them needs secrets.
+# Checks that must be required in branch protection: "Build", "Tests (Transfer)", "Tests (Transaction)",
 # "Tests (Balance)" y "Tests (Notification)".
 
 on:
@@ -12,7 +12,7 @@ on:
   push:
     branches: [main, develop]
 
-# Una ejecución nueva sobre el mismo pull request cancela la anterior; en main/develop nunca se cancela.
+# A new run on the same pull request cancels the previous one; on main/develop it is never canceled.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -33,26 +33,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar .NET 10
+      - name: Install .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Caché de paquetes NuGet
+      - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Restaurar
+      - name: Restore
         run: dotnet restore Bank.slnx
 
-      - name: Compilar (Release)
+      - name: Build (Release)
         run: dotnet build Bank.slnx --configuration Release --no-restore
 
-      # Informativo: no bloquea el pipeline. Pkcs transitivo fijado en 10.0.14 en los servicios con SQL.
-      - name: Auditar paquetes vulnerables (informativo)
+      # Informational: does not block the pipeline. Transitive Pkcs pinned to 10.0.14 in the services with SQL.
+      - name: Audit vulnerable packages (informational)
         continue-on-error: true
         run: |
           for project in $(git ls-files '*.csproj'); do
@@ -73,33 +73,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Instalar .NET 10
+      - name: Install .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Caché de paquetes NuGet
+      - name: Cache NuGet packages
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      - name: Restaurar
+      - name: Restore
         run: dotnet restore tests/Bank.${{ matrix.service }}.Api.Tests
 
-      - name: Compilar (Release)
+      - name: Build (Release)
         run: dotnet build tests/Bank.${{ matrix.service }}.Api.Tests --configuration Release --no-restore
 
       # Docker viene preinstalado en ubuntu-latest; Testcontainers descarga y arranca SQL Server 2022 (no aplica a Notification).
-      - name: Ejecutar pruebas
+      - name: Run tests
         run: >
           dotnet test tests/Bank.${{ matrix.service }}.Api.Tests
           --configuration Release --no-build
           --logger "trx;LogFileName=${{ matrix.service }}.trx"
           --results-directory TestResults
 
-      - name: Publicar resultados de prueba
+      - name: Publish test results
         if: always()
         uses: actions/upload-artifact@v4
         with:

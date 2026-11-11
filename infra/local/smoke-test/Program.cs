@@ -1,8 +1,9 @@
 using Azure.Messaging.ServiceBus;
 
-// Prueba de humo: el filtro de correlación (Label) del Config.json debe enrutar por Subject.
-// Uso: dotnet run [-- <evento1> <evento2>]   (por defecto transaction-initiated / balance-initiated)
-// Cadena de conexión: variable de entorno SERVICEBUSCONSTR, o la del emulador local (no es un secreto).
+// Smoke test: the correlation filter (Label) of Config.json must route by Subject.
+// Usage: dotnet run [-- <event1> <event2>]   (default transaction-initiated / balance-initiated)
+// Connection string: SERVICEBUSCONSTR environment variable, or the local emulator one (not a secret).
+// The messages it prints are runtime strings and stay in Spanish.
 
 const string DefaultConnection =
     "Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;";

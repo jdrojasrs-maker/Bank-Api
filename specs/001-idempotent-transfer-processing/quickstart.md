@@ -1,75 +1,75 @@
-# Quickstart (Fase 1): validar el procesamiento idempotente
+# Quickstart (Phase 1): validate idempotent processing
 
-Guía para comprobar que la funcionalidad cumple la spec. No contiene código de implementación.
-Detalles de datos: [data-model.md](data-model.md). Contrato de eventos: [contracts/events.md](contracts/events.md).
+Guide to check that the feature meets the spec. It contains no implementation code.
+Data details: [data-model.md](data-model.md). Event contract: [contracts/events.md](contracts/events.md).
 
-## Prerrequisitos
-- Docker en marcha (las pruebas automáticas levantan su propio SQL Server en contenedor; la imagen
-  `mcr.microsoft.com/mssql/server:2022-latest` ya está descargada).
-- Entorno local de `infra/local/` arriba solo para la validación manual: `docker compose up -d`, `.\apply-migrations.ps1`,
+## Prerequisites
+- Docker running (the automated tests start their own SQL Server in a container; the image
+  `mcr.microsoft.com/mssql/server:2022-latest` is already downloaded).
+- The `infra/local/` local environment up only for manual validation: `docker compose up -d`, `.\apply-migrations.ps1`,
   `curl.exe http://localhost:5300/health` ⇒ 200.
-- SDK .NET 10.
+- .NET 10 SDK.
 
-## 1. Validación automática (obligatoria; Principio V)
+## 1. Automated validation (mandatory; Principle V)
 
-Desde la raíz del repositorio:
+From the repository root:
 
 ```powershell
 dotnet test tests/Bank.Transfer.Api.Tests
 dotnet test tests/Bank.Transaction.Api.Tests
 ```
 
-Resultado esperado: todas las pruebas en verde. Cada prueba arranca una base limpia aplicando las migraciones reales.
+Expected result: all tests green. Each test starts a clean database by applying the real migrations.
 
-| Escenario de la spec | Prueba que lo cubre | Resultado esperado |
+| Spec scenario | Test that covers it | Expected result |
 |---|---|---|
-| Historia 1, esc. 1 y 4 | Mismo `transfer-initiated` entregado 2 a 10 veces en serie | 1 fila en `Transfer`, 1 resultado emitido, registro original intacto |
-| Historia 1, esc. 2 | Mismo mensaje entregado en paralelo | 1 fila, 1 resultado |
-| Historia 1, esc. 3 | Mensaje rechazado (violación de `CHECK` provocada) y luego repetido | 1 `transfer-failed`, 0 filas en `Transfer`, sin segundo fallo |
-| Historia 2, esc. 1 a 3 | Para `Completed` y `Canceled`: repetir `transaction-initiated`, `balance-confirmed`, `balance-failed`, `transfer-failed`, `transfer-confirmed` | Estado sin cambios y 0 eventos emitidos |
-| Historia 2, esc. 4 | Transiciones válidas desde `Pending` | Pasa a `Completed` / `Canceled` con sus eventos |
-| Historia 3 | Fallo del emisor tras registrar; reentrega | 1 fila y el resultado llega |
-| Casos límite | Mensaje sin `CorrelationId`; mismo id con monto distinto | Sin cambios en datos; registro `InvalidMessage` / `ContentMismatch` |
+| Story 1, sc. 1 and 4 | Same `transfer-initiated` delivered 2 to 10 times serially | 1 row in `Transfer`, 1 result emitted, original record intact |
+| Story 1, sc. 2 | Same message delivered in parallel | 1 row, 1 result |
+| Story 1, sc. 3 | Rejected message (provoked `CHECK` violation) and then repeated | 1 `transfer-failed`, 0 rows in `Transfer`, no second failure |
+| Story 2, sc. 1 to 3 | For `Completed` and `Canceled`: repeat `transaction-initiated`, `balance-confirmed`, `balance-failed`, `transfer-failed`, `transfer-confirmed` | State unchanged and 0 events emitted |
+| Story 2, sc. 4 | Valid transitions from `Pending` | Moves to `Completed` / `Canceled` with their events |
+| Story 3 | Sender failure after recording; redelivery | 1 row and the result arrives |
+| Edge cases | Message without `CorrelationId`; same id with a different amount | No data changes; `InvalidMessage` / `ContentMismatch` record |
 
-## 2. Validación manual de punta a punta (recomendada)
+## 2. Manual end-to-end validation (recommended)
 
-1. Aplicar las migraciones nuevas: `.\infra\local\apply-migrations.ps1`.
-   - Si falla al crear un índice único por duplicados previos, comprobar antes (ver sección 4).
-2. Arrancar los servicios con el perfil `http` (Gateway, Transaction, Balance, Transfer), como en el README.
-3. **Camino feliz (SC-005)**: `POST http://localhost:5204/api-gateway` con una transferencia; esperado: `Completed` / `Completed` / `Complete`.
-4. **Duplicado**: volver a publicar en el tópico el mismo `transfer-initiated` (mismo `CorrelationId`) con una herramienta de consola
-   (véase la tarea de apoyo en `tasks.md`; no forma parte del servicio).
-5. Comprobar con SQL (conexión a cada base, como en la guía de VS Code):
+1. Apply the new migrations: `.\infra\local\apply-migrations.ps1`.
+   - If it fails while creating a unique index because of previous duplicates, check first (see section 4).
+2. Start the services with the `http` profile (Gateway, Transaction, Balance, Transfer), as in the README.
+3. **Happy path (SC-005)**: `POST http://localhost:5204/api-gateway` with a transfer; expected: `Completed` / `Completed` / `Complete`.
+4. **Duplicate**: publish again to the topic the same `transfer-initiated` (same `CorrelationId`) with a console tool
+   (see the support task in `tasks.md`; it is not part of the service).
+5. Check with SQL (connection to each database, as in the VS Code guide):
 
 ```sql
--- BankTransfer: debe devolver 0 filas (ninguna duplicada)
+-- BankTransfer: must return 0 rows (none duplicated)
 SELECT CorrelationId, COUNT(*) AS n FROM Transfer GROUP BY CorrelationId HAVING COUNT(*) > 1;
 
--- BankTransfer: una fila por solicitud, con EmittedAt informado
+-- BankTransfer: one row per request, with EmittedAt filled in
 SELECT CorrelationId, Outcome, ClaimedAt, EmittedAt FROM TransferRequest ORDER BY Id DESC;
 
--- BankTransaction: tras un duplicado tardío, el estado debe seguir siendo final
+-- BankTransaction: after a late duplicate, the state must still be final
 SELECT CorrelationId, CurrentState FROM [Transaction] ORDER BY Id DESC;
 ```
 
-6. Ver en los logs de Transfer/Transaction los registros `Reason = DuplicateAlreadyEmitted` / `FinalStateProtected` con el `CorrelationId`.
-7. Comprobar con `peek` (proyecto auxiliar) que no hay un segundo `transfer-confirmed` en la suscripción.
+6. In the Transfer/Transaction logs, look for the records `Reason = DuplicateAlreadyEmitted` / `FinalStateProtected` with the `CorrelationId`.
+7. Check with `peek` (helper project) that there is no second `transfer-confirmed` in the subscription.
 
-## 3. Criterios de aceptación
+## 3. Acceptance criteria
 
-| Criterio | Cómo se comprueba |
+| Criterion | How it is checked |
 |---|---|
-| SC-001 | Pruebas de entregas repetidas en serie y en paralelo: siempre 1 fila |
-| SC-002 | Ídem: 1 resultado emitido |
-| SC-003 | Combinaciones estado final × tipo de mensaje: 0 cambios y 0 eventos |
-| SC-004 | Prueba de interrupción: 1 fila y el resultado llega al menos una vez |
-| SC-005 | Camino feliz manual y prueba automática de regresión |
-| SC-006 | Registros con `CorrelationId` y `Reason` |
-| SC-007 | `dotnet test` en verde en ambos proyectos |
+| SC-001 | Tests of repeated deliveries serially and in parallel: always 1 row |
+| SC-002 | Same: 1 result emitted |
+| SC-003 | Final state × message type combinations: 0 changes and 0 events |
+| SC-004 | Interruption test: 1 row and the result arrives at least once |
+| SC-005 | Manual happy path and automated regression test |
+| SC-006 | Records with `CorrelationId` and `Reason` |
+| SC-007 | `dotnet test` green in both projects |
 
-## 4. Si algo falla
-- **Error al crear el índice único**: hay `CorrelationId` repetidos. Detectarlos con
-  `SELECT CorrelationId, COUNT(*) FROM Transfer GROUP BY CorrelationId HAVING COUNT(*) > 1;` (y lo mismo con `[Transaction]`).
-  En local, lo más simple es `docker compose down` y volver a ejecutar `apply-migrations.ps1` (las bases son desechables).
-- **Las pruebas no arrancan**: comprobar que Docker responde (`docker version`).
-- **El emulador perdió sus entidades tras recrear SQL**: `docker compose restart emulator`.
+## 4. If something fails
+- **Error while creating the unique index**: there are repeated `CorrelationId`s. Detect them with
+  `SELECT CorrelationId, COUNT(*) FROM Transfer GROUP BY CorrelationId HAVING COUNT(*) > 1;` (and the same with `[Transaction]`).
+  Locally, the simplest is `docker compose down` and running `apply-migrations.ps1` again (the databases are disposable).
+- **The tests do not start**: check that Docker responds (`docker version`).
+- **The emulator lost its entities after recreating SQL**: `docker compose restart emulator`.

@@ -1,57 +1,57 @@
-# Contrato de eventos (Fase 1): comportamiento idempotente
+# Event contract (Phase 1): idempotent behavior
 
-La interfaz que esta feature expone a otros servicios son los **eventos del tópico `bank-transfer`**. Esta feature **no cambia
-ningún nombre de evento ni ningún campo del payload** (compatibilidad exigida por la constitución y por `CLAUDE.md`):
-no hay que tocar `infra/local/Config.json` ni la tabla de eventos del README. Cambia el **comportamiento** al recibir
-mensajes repetidos o tardíos, descrito aquí.
+The interface this feature exposes to other services is the **events of the `bank-transfer` topic**. This feature **does not change
+any event name or any payload field** (compatibility required by the constitution and by `CLAUDE.md`):
+there is no need to touch `infra/local/Config.json` or the README events table. What changes is the **behavior** when
+repeated or late messages are received, described here.
 
-Reglas comunes:
-- El nombre del evento va en `ServiceBusMessage.Subject` y coincide con la suscripción (kebab-case).
-- `CorrelationId` es la clave de idempotencia y viaja en todos los eventos.
-- Entrega al menos una vez: cualquier mensaje puede llegar más de una vez.
-- Un mensaje ignorado **se completa** (no se reintenta) y deja un registro estructurado con `CorrelationId`, `MessageType` y `Reason`.
+Common rules:
+- The event name goes in `ServiceBusMessage.Subject` and matches the subscription (kebab-case).
+- `CorrelationId` is the idempotency key and travels in all events.
+- At-least-once delivery: any message can arrive more than once.
+- An ignored message **is completed** (not retried) and leaves a structured record with `CorrelationId`, `MessageType` and `Reason`.
 
-## Eventos consumidos con comportamiento nuevo
+## Consumed events with new behavior
 
-### `transfer-initiated` → consumido por Transfer
+### `transfer-initiated` → consumed by Transfer
 
-| Aspecto | Contrato |
+| Aspect | Contract |
 |---|---|
-| Emisor | Transaction (tras `balance-confirmed`) |
-| Payload (sin cambios) | `{ "CorrelationId": string, "Amount": decimal, "SourceAccount": string, "DestinationAccount": string, "CustomerId": int }` |
-| Precondición | `CorrelationId` no vacío (≤ 64 caracteres) y cuerpo interpretable |
-| Efecto la primera vez | Registra una transferencia y emite **exactamente uno** de `transfer-confirmed` / `transfer-failed` |
-| Efecto en repeticiones | Ninguno si el resultado ya se emitió o está en emisión; no modifica el registro original; no emite de nuevo |
-| Recuperación | Si el registro quedó hecho y el resultado no llegó a emitirse, la reentrega lo emite sin crear otra transferencia |
-| Contenido distinto, mismo id | Prevalece el primero; el posterior se ignora y se registra `ContentMismatch` |
-| Inválido | Sin efecto; se registra `InvalidMessage` y se completa |
+| Sender | Transaction (after `balance-confirmed`) |
+| Payload (unchanged) | `{ "CorrelationId": string, "Amount": decimal, "SourceAccount": string, "DestinationAccount": string, "CustomerId": int }` |
+| Precondition | Non-empty `CorrelationId` (≤ 64 characters) and an interpretable body |
+| Effect the first time | Records a transfer and emits **exactly one** of `transfer-confirmed` / `transfer-failed` |
+| Effect on repetitions | None if the result was already emitted or is being emitted; it does not modify the original record; it does not emit again |
+| Recovery | If the record was made and the result was never emitted, the redelivery emits it without creating another transfer |
+| Different content, same id | The first one prevails; the later one is ignored and `ContentMismatch` is recorded |
+| Invalid | No effect; `InvalidMessage` is recorded and the message is completed |
 
-### Eventos consumidos por Transaction
+### Events consumed by Transaction
 
-| Evento | Estado actual `Pending` | Estado `Completed` / `Canceled` | Sin fila |
+| Event | Current state `Pending` | State `Completed` / `Canceled` | No row |
 |---|---|---|---|
-| `transaction-initiated` | Crea la fila (primera vez) o repite `balance-initiated` | Ignorado, sin eventos | Crea la fila |
-| `balance-confirmed` | Emite `transfer-initiated` | Ignorado, sin eventos | Ignorado |
-| `balance-failed` | → `Canceled`, emite `transaction-failed` | Ignorado, sin eventos | Ignorado |
-| `transfer-failed` | → `Canceled`, emite `transaction-failed` y `transfer-failed-balance` | Ignorado, sin eventos | Ignorado |
-| `transfer-confirmed` | → `Completed`, emite `transaction-completed` y `transfer-confirmed-balance` | Ignorado, sin eventos | Ignorado |
+| `transaction-initiated` | Creates the row (first time) or repeats `balance-initiated` | Ignored, no events | Creates the row |
+| `balance-confirmed` | Emits `transfer-initiated` | Ignored, no events | Ignored |
+| `balance-failed` | → `Canceled`, emits `transaction-failed` | Ignored, no events | Ignored |
+| `transfer-failed` | → `Canceled`, emits `transaction-failed` and `transfer-failed-balance` | Ignored, no events | Ignored |
+| `transfer-confirmed` | → `Completed`, emits `transaction-completed` and `transfer-confirmed-balance` | Ignored, no events | Ignored |
 
-Un estado final **nunca** cambia: ni a `Pending` ni al otro estado final.
+A final state **never** changes: neither to `Pending` nor to the other final state.
 
-## Eventos emitidos (payloads sin cambios)
+## Emitted events (payloads unchanged)
 
-| Evento | Emisor | Payload | Garantía nueva |
+| Event | Sender | Payload | New guarantee |
 |---|---|---|---|
-| `transfer-confirmed` | Transfer | `{ CorrelationId, CustomerId }` | Como máximo una vez por `CorrelationId` ante repeticiones sin interrupción |
-| `transfer-failed` | Transfer | `{ CorrelationId, CustomerId }` | Ídem; un rechazo repetido no emite un segundo fallo |
-| `balance-initiated` | Transaction | `{ CorrelationId, CustomerId }` | Puede repetirse solo mientras la transacción siga `Pending` (recuperación) |
-| `transfer-initiated` | Transaction | `{ CorrelationId, Amount, SourceAccount, DestinationAccount, CustomerId }` | Nunca se emite desde un estado final |
-| `transaction-failed` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Nunca se emite desde un estado final |
-| `transaction-completed` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Nunca se emite desde un estado final |
-| `transfer-failed-balance` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Nunca se emite desde un estado final |
-| `transfer-confirmed-balance` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Nunca se emite desde un estado final |
+| `transfer-confirmed` | Transfer | `{ CorrelationId, CustomerId }` | At most once per `CorrelationId` on repetitions without interruption |
+| `transfer-failed` | Transfer | `{ CorrelationId, CustomerId }` | Same; a repeated rejection does not emit a second failure |
+| `balance-initiated` | Transaction | `{ CorrelationId, CustomerId }` | May be repeated only while the transaction is still `Pending` (recovery) |
+| `transfer-initiated` | Transaction | `{ CorrelationId, Amount, SourceAccount, DestinationAccount, CustomerId }` | Never emitted from a final state |
+| `transaction-failed` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Never emitted from a final state |
+| `transaction-completed` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Never emitted from a final state |
+| `transfer-failed-balance` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Never emitted from a final state |
+| `transfer-confirmed-balance` | Transaction | `{ CorrelationId, Amount, CustomerId }` | Never emitted from a final state |
 
-## Compatibilidad
-- Cambio **no rompiente**: mismos eventos, mismos campos, mismos nombres de suscripción.
-- Los consumidores que ya reciben eventos más de una vez (Balance con *upsert*, Notification) no necesitan cambios para esta feature.
-- La idempotencia de Balance y Notification queda fuera de alcance (ver la spec).
+## Compatibility
+- **Non-breaking** change: same events, same fields, same subscription names.
+- Consumers that already receive events more than once (Balance with *upsert*, Notification) need no changes for this feature.
+- The idempotency of Balance and Notification is out of scope (see the spec).

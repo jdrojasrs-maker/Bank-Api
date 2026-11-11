@@ -1,109 +1,109 @@
-# Data Model: Consumo resiliente de mensajes
+# Data Model: Resilient message consumption
 
-Esta feature **no añade tablas, columnas ni migraciones**. Todo el estado del reintento viaja en el propio mensaje. Las entidades
-siguientes son conceptos de diseño (clases en memoria o valores de configuración), no persistencia.
+This feature **adds no tables, columns or migrations**. All the retry state travels in the message itself. The following entities
+are design concepts (in-memory classes or configuration values), not persistence.
 
 ## FailureClassification
 
-Resultado de clasificar un fallo. Determina qué se hace con el mensaje.
+Result of classifying a failure. It determines what is done with the message.
 
-| Valor | Cuándo | Acción |
+| Value | When | Action |
 |---|---|---|
-| `Poison` | El mensaje no puede interpretarse o carece de datos obligatorios | DLQ inmediata (+ `*-failed` si hay `CorrelationId`) |
-| `Permanent` | La base de datos rechaza los datos (SQL 515, 547, 8115, 8152) | Lo resuelve `ProcessService`: emite su `*-failed` y completa (sin cambios) |
-| `Transient` | Cualquier otra excepción del procesamiento (salvo `JsonException`, que es `Poison`) | Reintento programado con espera creciente |
+| `Poison` | The message cannot be interpreted or lacks mandatory data | Immediate DLQ (+ `*-failed` if there is a `CorrelationId`) |
+| `Permanent` | The database rejects the data (SQL 515, 547, 8115, 8152) | Resolved by `ProcessService`: it emits its `*-failed` and completes (unchanged) |
+| `Transient` | Any other processing exception (except `JsonException`, which is `Poison`) | Scheduled retry with a growing delay |
 
-Nota: la unicidad (SQL 2601/2627) **no es un fallo**: significa "ya procesado" y la absorbe `ProcessService` (FR-011).
+Note: uniqueness (SQL 2601/2627) **is not a failure**: it means "already processed" and `ProcessService` absorbs it (FR-011).
 
-## PoisonCheck (resultado de `MessageClassifier`)
+## PoisonCheck (result of `MessageClassifier`)
 
-| Campo | Tipo | Descripción |
+| Field | Type | Description |
 |---|---|---|
-| `IsPoison` | bool | Verdadero si el mensaje es venenoso |
-| `Detail` | string | Qué estaba mal, legible (p. ej. "El cuerpo del mensaje está vacío") |
-| `CorrelationId` | string? | El `CorrelationId` si se pudo leer; `null` si no. Máx. 64 caracteres (los más largos se truncan solo para registrar) |
+| `IsPoison` | bool | True if the message is poison |
+| `Detail` | string | What was wrong, readable (e.g. "El cuerpo del mensaje está vacío"; the runtime strings are in Spanish) |
+| `CorrelationId` | string? | The `CorrelationId` if it could be read; `null` if not. Max. 64 characters (longer ones are truncated only for logging) |
 
-**Reglas de validación** (cada una produce `Poison`):
-1. Cuerpo vacío o solo espacios.
-2. No es JSON válido.
-3. Es JSON `null` o no es un objeto.
-4. `CorrelationId` ausente, nulo o en blanco.
-5. `CorrelationId` con más de 64 caracteres (misma regla que ya aplican Transfer y Transaction).
+**Validation rules** (each one produces `Poison`):
+1. Empty body or only whitespace.
+2. Not valid JSON.
+3. It is JSON `null` or not an object.
+4. `CorrelationId` missing, null or blank.
+5. `CorrelationId` longer than 64 characters (the same rule Transfer and Transaction already apply).
 
-6. El cuerpo no deserializa a la entidad del servicio (por ejemplo un campo con tipo incorrecto, `"CustomerId":"abc"`, ya que `CustomerId` es un entero en las cuatro entidades): es el mismo
-   intento de deserialización que hace `ProcessService`, hecho antes para poder apartar el mensaje.
+6. The body does not deserialize to the service's entity (for example a field with the wrong type, `"CustomerId":"abc"`, since `CustomerId` is an integer in the four entities): it is the same
+   deserialization attempt that `ProcessService` makes, done earlier so that the message can be set aside.
 
-Como segunda línea de defensa, una `JsonException` lanzada **durante** el procesamiento se trata también como `Poison` en
-`ResilientMessageProcessor`: es un error permanente, reintentarlo no lo arregla.
+As a second line of defense, a `JsonException` thrown **during** processing is also treated as `Poison` in
+`ResilientMessageProcessor`: it is a permanent error, retrying does not fix it.
 
 ## RetryPolicy
 
-| Valor | Tipo | Descripción |
+| Value | Type | Description |
 |---|---|---|
-| `MAX_RETRIES` | int = 5 | Reintentos tras la primera ejecución (6 ejecuciones en total) |
-| `BASE_DELAY_SECONDS` | int = 5 | Espera base |
-| `GROWTH_FACTOR` | int = 3 | Multiplicador por reintento |
-| `MAX_DELAY_SECONDS` | int = 300 | Tope de la espera |
-| `JITTER` | decimal = 0,2 | Variación aleatoria ±20 % |
+| `MAX_RETRIES` | int = 5 | Retries after the first execution (6 executions in total) |
+| `BASE_DELAY_SECONDS` | int = 5 | Base delay |
+| `GROWTH_FACTOR` | int = 3 | Multiplier per retry |
+| `MAX_DELAY_SECONDS` | int = 300 | Cap on the delay |
+| `JITTER` | decimal = 0.2 | Random variation ±20 % |
 
-`NextDelay(retry, random)` es función pura: `min(BASE · FACTOR^(retry−1), MAX) × (1 ± JITTER)`. Tabla en [research.md](research.md) R2.
+`NextDelay(retry, random)` is a pure function: `min(BASE · FACTOR^(retry−1), MAX) × (1 ± JITTER)`. Table in [research.md](research.md) R2.
 
-## RetryAttempt (propiedad del mensaje)
+## RetryAttempt (message property)
 
-| Aspecto | Valor |
+| Aspect | Value |
 |---|---|
-| Nombre | `RetryAttempt` (propiedad de aplicación del mensaje) |
-| Tipo | entero |
-| Ausente | equivale a 0 (primera entrega del mensaje original) |
-| Quién la escribe | el consumidor, al programar la copia: `RetryAttempt = intento anterior + 1` |
-| Quién la lee | el consumidor, al recibir un mensaje, para saber cuántos reintentos lleva |
-| Valor máximo | `MAX_RETRIES`; si un fallo transitorio ocurre con `RetryAttempt = MAX_RETRIES`, se compensa y se aparta |
+| Name | `RetryAttempt` (application property of the message) |
+| Type | integer |
+| Absent | equivalent to 0 (first delivery of the original message) |
+| Who writes it | the consumer, when scheduling the copy: `RetryAttempt = previous attempt + 1` |
+| Who reads it | the consumer, when receiving a message, to know how many retries it has |
+| Maximum value | `MAX_RETRIES`; if a transient failure occurs with `RetryAttempt = MAX_RETRIES`, it is compensated and set aside |
 
-El resto de propiedades y el cuerpo del mensaje original se copian sin cambios, de modo que la copia es indistinguible para el
-servicio salvo por `RetryAttempt`.
+The remaining properties and the body of the original message are copied unchanged, so that the copy is indistinguishable to the
+service except for `RetryAttempt`.
 
-## DeadLetterRecord (lo que queda en la DLQ)
+## DeadLetterRecord (what stays in the DLQ)
 
-| Campo | Origen | Ejemplo |
+| Field | Source | Example |
 |---|---|---|
-| `DeadLetterReason` | Constante fija | `PoisonMessage` · `RetriesExhausted` · `CompensationFailed` |
-| `DeadLetterErrorDescription` | Detalle legible, ≤ 1 024 caracteres | "Reintentos agotados tras 6 intentos. Último error: SqlException: Timeout expired" |
-| `CorrelationId` (propiedad) | Del cuerpo, si es legible | `a3f1…` |
-| `Attempts` (propiedad) | `RetryAttempt + 1` | `6` |
+| `DeadLetterReason` | Fixed constant | `PoisonMessage` · `RetriesExhausted` · `CompensationFailed` |
+| `DeadLetterErrorDescription` | Readable detail, ≤ 1,024 characters | "Reintentos agotados tras 6 intentos. Último error: SqlException: Timeout expired" (runtime string, in Spanish) |
+| `CorrelationId` (property) | From the body, if readable | `a3f1…` |
+| `Attempts` (property) | `RetryAttempt + 1` | `6` |
 
-## LogEntry (contrato de registro)
+## LogEntry (logging contract)
 
-Campos estructurados, con nombres fijos en la plantilla (ver [contracts/message-handling.md](contracts/message-handling.md)):
+Structured fields, with fixed names in the template (see [contracts/message-handling.md](contracts/message-handling.md)):
 `CorrelationId`, `MessageId`, `MessageType`, `Attempt`, `Classification`, `Reason`.
 
-## CompensationDecision (regla de seguridad, FR-016)
+## CompensationDecision (safety rule, FR-016)
 
-Decisión que toma el `FailureCompensator` antes de emitir un `*-failed`. Solo aplica a la suscripción de primer paso de Transaction,
-Balance y Transfer; para cualquier otra devuelve `false` sin consultar.
+Decision taken by `FailureCompensator` before emitting a `*-failed`. It applies only to the first-step subscription of Transaction,
+Balance and Transfer; for any other it returns `false` without querying.
 
-| Situación | Decisión | Se registra |
+| Situation | Decision | What is logged |
 |---|---|---|
-| No existe registro del `CorrelationId` en la base del servicio | **Emitir** el `*-failed` | `Information` |
-| Existe un registro (cualquier estado) | **No emitir**: el paso ya tuvo efecto | `Warning` con `Reason = "AlreadyRegistered"` |
-| La base de datos no se puede consultar | **Emitir** | `Warning` con la causa de la consulta fallida |
-| `CorrelationId` ilegible | **No emitir** (no hay a quién correlacionar) | `Warning` |
+| There is no record of the `CorrelationId` in the service's database | **Emit** the `*-failed` | `Information` |
+| A record exists (any state) | **Do not emit**: the step already had effect | `Warning` with `Reason = "AlreadyRegistered"` |
+| The database cannot be queried | **Emit** | `Warning` with the cause of the failed query |
+| Unreadable `CorrelationId` | **Do not emit** (nothing to correlate with) | `Warning` |
 
-Registro consultado: `Transaction` (Transaction), `Balance` (Balance) y `TransferRequest` (Transfer). El mensaje se aparta a la DLQ
-en todos los casos; esta decisión solo gobierna el evento de fallo.
+Record queried: `Transaction` (Transaction), `Balance` (Balance) and `TransferRequest` (Transfer). The message is set aside to the DLQ
+in all cases; this decision only governs the failure event.
 
-## Transiciones del procesamiento de un mensaje
+## Transitions of a message's processing
 
 ```text
-recibido ──► ¿venenoso? ──sí──► [compensar si hay CorrelationId y no hay registro propio] ──► DLQ (PoisonMessage)
+received ──► poison? ──yes──► [compensate if there is a CorrelationId and no own record] ──► DLQ (PoisonMessage)
    │
    no
    ▼
  ProcessService.Execute
    │
-   ├─ éxito ───────────────────────────────────────────► completar
-   ├─ permanente de datos / duplicado ─ (lo resuelve ProcessService) ─► completar
-   └─ excepción (transitoria)
-        ├─ RetryAttempt < MAX_RETRIES ─► programar copia (RetryAttempt+1, espera creciente) ─► completar el original
-        └─ RetryAttempt = MAX_RETRIES ─► [compensar si no hay registro propio] ─► DLQ (RetriesExhausted)
-        (cancelación por apagado ─► sin reintento; el broker reentrega tras el reinicio)
+   ├─ success ─────────────────────────────────────────► complete
+   ├─ permanent data error / duplicate ─ (resolved by ProcessService) ─► complete
+   └─ exception (transient)
+        ├─ RetryAttempt < MAX_RETRIES ─► schedule copy (RetryAttempt+1, growing delay) ─► complete the original
+        └─ RetryAttempt = MAX_RETRIES ─► [compensate if there is no own record] ─► DLQ (RetriesExhausted)
+        (cancellation due to shutdown ─► no retry; the broker redelivers after the restart)
 ```

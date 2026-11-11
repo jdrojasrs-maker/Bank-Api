@@ -1,116 +1,113 @@
 <!--
-SYNC IMPACT REPORT (borrador de revisión; eliminar antes de versionar el archivo)
-Version change: 1.1.0 → 1.2.0 (MINOR: se amplía materialmente la regla de integración continua del "Flujo de desarrollo")
-Modified principles: ninguno (los cinco principios no cambian)
-Modified sections:
-  - Flujo de desarrollo: los checks exigidos pasan de 3 a 5 (se añaden "Tests (Balance)" y "Tests (Notification)")
-Added sections: ninguna
-Removed sections: ninguna
-Templates requiring updates: ninguna modificada aquí (las plantillas leen la constitución en tiempo de ejecución).
+SYNC IMPACT REPORT (review draft; remove before versioning the file)
+Version change: 1.2.0 → 1.2.1 (PATCH: the whole document is translated from Spanish to English; no rule changes)
+Modified principles: none (the five principles are unchanged; only their wording language changes)
+Modified sections: all, translation only. Normative keywords map as: DEBE → MUST, NO DEBE → MUST NOT,
+  DEBERÍA → SHOULD, PUEDE → MAY.
+Added sections: none
+Removed sections: none
+Templates requiring updates: none modified here (the templates read the constitution at run time).
 Follow-up TODOs:
-  - Ajustar en GitHub la protección de main y develop para exigir también "Tests (Balance)" y "Tests (Notification)"
-    (ajuste de la interfaz web; solo se pueden elegir tras ejecutarse una vez).
-  - Brechas conocidas frente a los principios (deuda registrada, no corregida aquí):
-    * III: cerradas para los primeros pasos (Balance, Transfer y Transaction compensan también al agotar los
-      reintentos y ante mensajes venenosos con CorrelationId legible). Restan los manejadores que solo
-      actualizan estado, que se registran y apartan a la DLQ sin compensar (no existe evento de fallo definido).
-    * II: Balance y Notification aún no son idempotentes (Transfer y Transaction sí).
+  - In GitHub, branch protection on main and develop must also require "Tests (Balance)" and "Tests (Notification)"
+    (web UI setting; they can only be chosen after they have run once). Confirmed done by the repository owner.
+  - Known gaps against the principles (recorded debt, not fixed here):
+    * III: closed for the first steps (Balance, Transfer and Transaction also compensate when retries are exhausted
+      and on poison messages with a readable CorrelationId). Still open: the handlers that only update state, which
+      are logged and set aside to the DLQ without compensation (no failure event is defined).
+    * II: Balance and Notification are not idempotent yet (Transfer and Transaction are).
 -->
 # Bank Constitution
 
 ## Core Principles
 
-### I. Servicios desacoplados solo por eventos
-Los servicios (Gateway, Transaction, Balance, Transfer, Notification) DEBEN comunicarse
-exclusivamente mediante eventos publicados en Azure Service Bus. NO DEBE existir ninguna
-referencia de proyecto, llamada HTTP ni acceso compartido entre servicios.
+### I. Services decoupled by events only
+The services (Gateway, Transaction, Balance, Transfer, Notification) MUST communicate exclusively
+through events published on Azure Service Bus. There MUST NOT be any project reference, HTTP call or
+shared access between services.
 
-Justificación: el desacoplamiento permite que un servicio caído, lento o redesplegado no afecte
-a los demás; los mensajes esperan en su suscripción hasta que el consumidor vuelve.
+Rationale: decoupling lets a service that is down, slow or being redeployed leave the others
+unaffected; messages wait in their subscription until the consumer returns.
 
-### II. Handlers idempotentes por CorrelationId
-Todo handler DEBE ser idempotente usando el `CorrelationId` creado en el Gateway, que DEBE viajar
-en todos los eventos de una transferencia. Procesar el mismo mensaje dos veces DEBE producir el
-mismo estado final y NO DEBE duplicar registros ni efectos externos (eventos, correos). Una
-comprobación previa por `CorrelationId` no basta bajo concurrencia: la unicidad DEBERÍA además
-estar garantizada por una restricción única en la base de datos del servicio.
+### II. Idempotent handlers by CorrelationId
+Every handler MUST be idempotent using the `CorrelationId` created in the Gateway, which MUST travel
+in all the events of a transfer. Processing the same message twice MUST produce the same final state
+and MUST NOT duplicate records or external effects (events, emails). A prior check by `CorrelationId`
+is not enough under concurrency: uniqueness SHOULD also be guaranteed by a unique constraint in the
+service's database.
 
-Justificación: Service Bus entrega al menos una vez; los duplicados son un comportamiento normal,
-no una excepción.
+Rationale: Service Bus delivers at least once; duplicates are normal behavior, not an exception.
 
-### III. Todo camino de error emite su evento de fallo
-Todo camino de error DEBE terminar en su evento de fallo o compensación (`*-failed`) en vez de
-perderse. Un error permanente (el reintento no lo resuelve) DEBE compensar de inmediato. Un error
-transitorio PUEDE reintentarse primero, pero si los reintentos se agotan DEBE emitir igualmente el
-evento de fallo. NO DEBE existir un camino en el que la saga quede en `Pending` sin salida, y NO
-DEBE usarse la ausencia de excepción o un `Id != 0` como único criterio de éxito.
+### III. Every error path emits its failure event
+Every error path MUST end in its failure or compensation event (`*-failed`) instead of getting lost.
+A permanent error (retrying does not solve it) MUST compensate immediately. A transient error MAY be
+retried first, but if the retries are exhausted it MUST still emit the failure event. There MUST NOT
+be a path in which the saga stays in `Pending` with no way out, and the absence of an exception or an
+`Id != 0` MUST NOT be used as the only success criterion.
 
-Justificación: sin compensación explícita las sagas quedan colgadas y el cliente nunca se entera
-de que la transferencia no se completó.
+Rationale: without explicit compensation, sagas get stuck and the customer never learns that the
+transfer was not completed.
 
-### IV. Cada servicio es dueño de su base de datos
-Cada servicio DEBE tener su propia base de datos y ser el único que lee y escribe en ella. NO DEBE
-compartirse ninguna tabla, cadena de conexión ni esquema entre servicios. Los datos de otro
-servicio solo se obtienen a través de sus eventos.
+### IV. Each service owns its database
+Each service MUST have its own database and be the only one that reads and writes it. No table,
+connection string or schema MUST be shared between services. Another service's data is obtained only
+through its events.
 
-Justificación: la propiedad exclusiva del dato es lo que hace posible el desacoplamiento del
-Principio I y la evolución independiente de cada esquema.
+Rationale: exclusive ownership of the data is what makes the decoupling of Principle I possible, and
+lets each schema evolve independently.
 
-### V. Toda corrección lleva prueba automática (NON-NEGOTIABLE)
-Toda corrección de defecto y todo cambio de comportamiento DEBE incluir una prueba automática que
-falle antes del cambio y pase después. El caso que originó el defecto DEBE quedar cubierto de forma
-permanente. NO DEBE aceptarse una corrección cuya única verificación sea manual.
+### V. Every fix comes with an automated test (NON-NEGOTIABLE)
+Every defect fix and every behavior change MUST include an automated test that fails before the change
+and passes after it. The case that originated the defect MUST remain permanently covered. A fix whose
+only verification is manual MUST NOT be accepted.
 
-Justificación: una corrección sin prueba puede regresar sin que nadie lo note; las pruebas manuales
-con inyección de fallos ya demostraron los defectos y ahora deben automatizarse.
+Rationale: a fix without a test can regress without anyone noticing; the manual fault-injection tests
+already demonstrated the defects and must now be automated.
 
-## Restricciones técnicas
+## Technical constraints
 
-- Plataforma: .NET 10 (`net10.0`), nullable e implicit usings habilitados. Solución `Bank.slnx`.
-- Mensajería: un único tópico (`SERVICEBUSTOPIC`). El nombre del evento DEBE ir en
-  `ServiceBusMessage.Subject` y coincidir con el nombre de la suscripción, en kebab-case. Los
-  nombres DEBEN vivir en `Domain/Constants` de cada servicio y coincidir entre servicios.
-- Contrato de eventos: payload JSON. Los emisores usan `System.Text.Json` y los receptores
-  `Newtonsoft.Json` (sin distinguir mayúsculas); se DEBE mantener la compatibilidad de campos.
-- Estructura por servicio: `Domain/`, `Application/`, `External/`, `Persistence/` y un `Program.cs`
-  que solo registra dependencias. Los `ProcessService` son *scoped*; los senders, *singleton*.
-- Secretos: la configuración sensible DEBE llegar por user-secrets o variables de entorno. NO DEBE
-  escribirse ningún secreto en `appsettings*.json`, en commits ni en `.env.example`.
-- Persistencia: el esquema DEBE evolucionar con migraciones de EF Core aplicadas por comando
-  (nunca al arrancar el servicio).
+- Platform: .NET 10 (`net10.0`), nullable and implicit usings enabled. Solution `Bank.slnx`.
+- Messaging: a single topic (`SERVICEBUSTOPIC`). The event name MUST go in
+  `ServiceBusMessage.Subject` and match the subscription name, in kebab-case. The names MUST live in
+  `Domain/Constants` of each service and match across services.
+- Event contract: JSON payload. Senders use `System.Text.Json` and receivers `Newtonsoft.Json`
+  (case-insensitive); field compatibility MUST be maintained.
+- Structure per service: `Domain/`, `Application/`, `External/`, `Persistence/` and a `Program.cs`
+  that only registers dependencies. The `ProcessService` classes are *scoped*; the senders, *singleton*.
+- Secrets: sensitive configuration MUST arrive through user-secrets or environment variables. No
+  secret MUST be written in `appsettings*.json`, in commits or in `.env.example`.
+- Persistence: the schema MUST evolve with EF Core migrations applied by command (never when the
+  service starts).
 
-## Flujo de desarrollo
+## Development workflow
 
-- Un cambio que añada o renombre un evento DEBE actualizar, en el mismo cambio, el emisor, el
-  receptor, `infra/local/Config.json` (suscripción y regla) y la tabla de eventos del README.
-- Un cambio de modelo DEBE incluir su migración y comprobarse con `infra/local/apply-migrations.ps1`.
-- Los servicios se ejecutan en el host con el perfil `http`; el flujo se verifica de punta a punta
-  contra el emulador de Service Bus y SQL Server locales (`infra/local/`).
-- Las zonas de deuda técnica conocida se señalan cuando un cambio las toca, pero NO se corrigen sin
-  petición expresa.
-- Los commits y pushes solo se realizan cuando el responsable del repositorio lo indica de forma
-  explícita.
-- Todo cambio DEBE integrarse en `main` o `develop` mediante pull request con la integración continua
-  (`.github/workflows/ci.yml`: compilación de `Bank.slnx` y pruebas de Transfer, Transaction, Balance y
-  Notification) en verde. Los checks `Build`, `Tests (Transfer)`, `Tests (Transaction)`,
-  `Tests (Balance)` y `Tests (Notification)` DEBEN exigirse en la protección de ramas del repositorio.
-- NO DEBE desactivarse, omitirse ni relajarse un check de integración continua para lograr que un
-  cambio pase; si un check falla, se corrige la causa.
+- A change that adds or renames an event MUST update, in the same change, the sender, the receiver,
+  `infra/local/Config.json` (subscription and rule) and the README events table.
+- A model change MUST include its migration and be checked with `infra/local/apply-migrations.ps1`.
+- The services run on the host with the `http` profile; the flow is verified end to end against the
+  local Service Bus emulator and SQL Server (`infra/local/`).
+- Areas of known technical debt are pointed out when a change touches them, but MUST NOT be fixed
+  without an express request.
+- Commits and pushes are made only when the repository owner explicitly says so.
+- Every change MUST be integrated into `main` or `develop` through a pull request with continuous
+  integration (`.github/workflows/ci.yml`: build of `Bank.slnx` and tests of Transfer, Transaction,
+  Balance and Notification) green. The checks `Build`, `Tests (Transfer)`, `Tests (Transaction)`,
+  `Tests (Balance)` and `Tests (Notification)` MUST be required in the repository's branch protection.
+- A continuous integration check MUST NOT be disabled, skipped or relaxed to make a change pass; if a
+  check fails, the cause is fixed.
 
 ## Governance
 
-Esta constitución prevalece sobre cualquier otra práctica del repositorio. `CLAUDE.md` es la guía
-de desarrollo en curso y NO DEBE contradecirla.
+This constitution prevails over any other practice in the repository. `CLAUDE.md` is the ongoing
+development guide and MUST NOT contradict it.
 
-- Enmiendas: se proponen por escrito con su justificación, se registran en el informe de
-  impacto y requieren aprobación del responsable del repositorio. Una enmienda que afecte a un
-  principio DEBE incluir el plan de adaptación del código existente o registrar la brecha como
-  deuda técnica.
-- Versionado (semántico): MAJOR para eliminar o redefinir un principio de forma incompatible;
-  MINOR para añadir un principio o sección, o ampliar materialmente una guía; PATCH para
-  aclaraciones y correcciones de redacción.
-- Revisión de cumplimiento: toda revisión de cambios DEBE verificar los cinco principios y que la
-  integración continua esté en verde. Cualquier excepción DEBE justificarse por escrito en el propio
-  cambio y registrarse como deuda técnica.
+- Amendments: they are proposed in writing with their justification, recorded in the impact report
+  and require the approval of the repository owner. An amendment that affects a principle MUST
+  include the adaptation plan for the existing code or record the gap as technical debt.
+- Versioning (semantic): MAJOR for removing or redefining a principle in an incompatible way;
+  MINOR for adding a principle or section, or materially expanding guidance; PATCH for
+  clarifications and wording corrections.
+- Compliance review: every review of changes MUST verify the five principles and that continuous
+  integration is green. Any exception MUST be justified in writing in the change itself and recorded
+  as technical debt.
 
-**Version**: 1.2.0 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-08
+**Version**: 1.2.1 | **Ratified**: 2026-11-03 | **Last Amended**: 2026-11-10

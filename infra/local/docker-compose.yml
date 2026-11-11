@@ -1,9 +1,9 @@
 name: bank-servicebus-local
 
-# Emulador local de Azure Service Bus + SQL Server (almacenamiento interno del emulador).
-# Basado en Docker-Compose-Template/ de azure-service-bus-emulator-installer,
-# usando mssql/server:2022-latest en lugar de Azure SQL Edge.
-# Variables: ver .env.example (copiar a .env, que no se versiona).
+# Local Azure Service Bus emulator + SQL Server (the emulator's internal storage).
+# Based on Docker-Compose-Template/ from azure-service-bus-emulator-installer,
+# using mssql/server:2022-latest instead of Azure SQL Edge.
+# Variables: see .env.example (copy it to .env, which is not versioned).
 
 services:
   sqlserver:
@@ -13,7 +13,7 @@ services:
       ACCEPT_EULA: ${ACCEPT_EULA}
       MSSQL_SA_PASSWORD: "${SQL_PASSWORD}"
     ports:
-      - "127.0.0.1:1433:1433"   # solo accesible desde esta máquina; lo usan los servicios con dotnet run
+      - "127.0.0.1:1433:1433"   # only reachable from this machine; used by the services run with dotnet run
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1' || exit 1"]
       interval: 5s

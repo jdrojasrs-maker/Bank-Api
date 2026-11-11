@@ -1,16 +1,16 @@
-# Quickstart: validar el consumo resiliente
+# Quickstart: validate resilient consumption
 
-Guía de validación. Los detalles de diseño están en [research.md](research.md), [data-model.md](data-model.md) y
+Validation guide. The design details are in [research.md](research.md), [data-model.md](data-model.md) and
 [contracts/message-handling.md](contracts/message-handling.md).
 
-## Requisitos previos
+## Prerequisites
 
-- Docker en marcha (SQL Server + emulador de Service Bus): `cd infra/local; docker compose up -d; .\apply-migrations.ps1`.
-- Emulador listo: `curl.exe http://localhost:5300/health` devuelve 200.
-- User-secrets de los cinco servicios configurados (ver `CLAUDE.md`).
-- Servicios en el host con el perfil `http`: `dotnet run --project src/Bank.<Servicio>/Bank.<Servicio>.Api --launch-profile http`.
+- Docker running (SQL Server + Service Bus emulator): `cd infra/local; docker compose up -d; .\apply-migrations.ps1`.
+- Emulator ready: `curl.exe http://localhost:5300/health` returns 200.
+- User-secrets of the five services configured (see `CLAUDE.md`).
+- Services on the host with the `http` profile: `dotnet run --project src/Bank.<Service>/Bank.<Service>.Api --launch-profile http`.
 
-## A. Pruebas automáticas (sin servicios en marcha)
+## A. Automated tests (no services running)
 
 ```powershell
 dotnet test tests/Bank.Transfer.Api.Tests
@@ -19,67 +19,68 @@ dotnet test tests/Bank.Balance.Api.Tests
 dotnet test tests/Bank.Notification.Api.Tests
 ```
 
-**Esperado**: todo en verde. Las 103 pruebas existentes (31 + 72) siguen pasando **sin modificarlas** (SC-007). Las pruebas de
-Las pruebas de Transfer, Transaction y Balance requieren Docker (Testcontainers; en Balance, por las del compensador); las de Notification no.
+**Expected**: all green. The 103 existing tests (31 + 72) keep passing **without modifying them** (SC-007).
+The Transfer, Transaction and Balance tests require Docker (Testcontainers; in Balance, because of the compensator ones); the Notification ones do not.
 
-Orden de trabajo (Principio V): cada prueba nueva se ejecuta primero en **rojo** y se verifica que falla por la razón correcta.
+Working order (Principle V): each new test is first run in **red** and it is verified that it fails for the right reason.
 
-## B. Mensaje venenoso (historia 1, SC-001)
+## B. Poison message (story 1, SC-001)
 
-Con los cinco servicios en marcha, enviar mensajes inválidos al tópico con el `Subject` de cada servicio (usar `infra/local/duplicate-test`
-extendido con un cuerpo arbitrario, o la consola del emulador):
+With the five services running, send invalid messages to the topic with the `Subject` of each service (use `infra/local/duplicate-test`
+in `--raw` mode, which sends an arbitrary body, or the emulator console):
 
-| Cuerpo | Suscripción | Esperado |
+| Body | Subscription | Expected |
 |---|---|---|
-| (vacío) | `transfer-initiated` | DLQ en la 1.ª entrega, motivo `PoisonMessage` |
-| `null` | `balance-initiated` | DLQ en la 1.ª entrega, motivo `PoisonMessage` |
-| `{ no es json` | `transaction-initiated` | DLQ en la 1.ª entrega, motivo `PoisonMessage` |
-| `{"Amount": 10}` (sin `CorrelationId`) | `transfer-initiated` | DLQ; sin `*-failed` |
-| `{"CorrelationId":"<id>","CustomerId":"abc"}` (campo con tipo incorrecto) | `balance-initiated` | `balance-failed` emitido **y** DLQ en la 1.ª entrega (error de deserialización ⇒ venenoso, sin reintentos) |
+| (empty) | `transfer-initiated` | DLQ on the 1st delivery, reason `PoisonMessage` |
+| `null` | `balance-initiated` | DLQ on the 1st delivery, reason `PoisonMessage` |
+| `{ no es json` | `transaction-initiated` | DLQ on the 1st delivery, reason `PoisonMessage` |
+| `{"Amount": 10}` (no `CorrelationId`) | `transfer-initiated` | DLQ; no `*-failed` |
+| `{"CorrelationId":"<id>","CustomerId":"abc"}` (field with the wrong type) | `balance-initiated` | `balance-failed` emitted **and** DLQ on the 1st delivery (deserialization error ⇒ poison, no retries) |
 
-**Comprobar la regla de seguridad (FR-016, SC-008)**: tras completar una transferencia normal, republicar a `balance-initiated` un
-mensaje con el mismo `CorrelationId` pero `"CustomerId":"abc"`. **Esperado:** el mensaje va a la DLQ (`PoisonMessage`) y **no** se
-emite `balance-failed`; la transacción sigue `Completed` y no llega correo de fallo.
+**Check the safety rule (FR-016, SC-008)**: after completing a normal transfer, republish to `balance-initiated` a
+message with the same `CorrelationId` but `"CustomerId":"abc"`. **Expected:** the message goes to the DLQ (`PoisonMessage`) and
+`balance-failed` is **not** emitted; the transaction stays `Completed` and no failure email arrives.
 
-**Comprobar**: `DeliveryCount` del mensaje en la DLQ = 1; el registro del servicio muestra el motivo y el `CorrelationId`; la
-transferencia con `CorrelationId` legible queda `Canceled` en Transaction.
+**Check**: the message's `DeliveryCount` in the DLQ = 1; the service log shows the reason and the `CorrelationId`; the
+transfer with a readable `CorrelationId` ends up `Canceled` in Transaction.
 
-## C. Fallo transitorio que se recupera (historia 2, SC-002, SC-003)
+## C. Transient failure that recovers (story 2, SC-002, SC-003)
 
-1. Poner `BankTransfer` fuera de línea:
+1. Take `BankTransfer` offline:
    `ALTER DATABASE BankTransfer SET OFFLINE WITH ROLLBACK IMMEDIATE;`
-2. Enviar una transferencia por el Gateway (`POST http://localhost:5204/api-gateway`).
-3. Observar el registro de Transfer: reintentos 1, 2, 3… con esperas **crecientes** (~5 s, ~15 s, ~45 s).
-4. **Reinicio durante la espera (FR-006)**: tras el 2.º reintento, detener Transfer con Ctrl+C y volver a arrancarlo con el perfil `http`. El reintento programado **no se pierde**: llega a su hora a la misma suscripción y el servicio nuevo lo procesa.
-5. A los ~90 s, `ALTER DATABASE BankTransfer SET ONLINE;`.
+2. Send a transfer through the Gateway (`POST http://localhost:5204/api-gateway`).
+3. Watch the Transfer log: retries 1, 2, 3… with **growing** delays (~5 s, ~15 s, ~45 s).
+4. **Restart during the wait (FR-006)**: after the 2nd retry, stop Transfer with Ctrl+C and start it again with the `http` profile. The scheduled retry is **not lost**: it arrives at its time at the same subscription and the new service processes it.
+5. After ~90 s, `ALTER DATABASE BankTransfer SET ONLINE;`.
 
-**Esperado**: la transferencia termina `Completed` sin intervención; la DLQ de `transfer-initiated` queda **vacía**; el registro
-muestra la secuencia de intentos con `CorrelationId`. (Hoy el mismo escenario manda el mensaje a la DLQ en ~15 s.)
+**Expected**: the transfer ends `Completed` without intervention; the DLQ of `transfer-initiated` stays **empty**; the log
+shows the sequence of attempts with `CorrelationId`. (Today the same scenario sends the message to the DLQ in ~15 s.)
 
-## D. Reintentos agotados (historia 3, SC-004, SC-005)
+## D. Retries exhausted (story 3, SC-004, SC-005)
 
-1. `ALTER DATABASE BankTransfer SET OFFLINE WITH ROLLBACK IMMEDIATE;` y enviar una transferencia.
-2. Esperar más de ~9 minutos (ventana nominal ≈ 8,3 min).
+1. `ALTER DATABASE BankTransfer SET OFFLINE WITH ROLLBACK IMMEDIATE;` and send a transfer.
+2. Wait more than ~9 minutes (nominal window ≈ 8.3 min).
 
-**Esperado**: Transfer emite `transfer-failed`; Transaction queda `Canceled`; el mensaje original está en la DLQ de
-`transfer-initiated` con motivo `RetriesExhausted`, `Attempts = 6` y el último error en el detalle. Volver a poner la base en línea.
+**Expected**: Transfer emits `transfer-failed`; Transaction ends `Canceled`; the original message is in the DLQ of
+`transfer-initiated` with reason `RetriesExhausted`, `Attempts = 6` and the last error in the detail. Put the database back online.
 
-> Esta prueba es larga; se recomienda ejecutarla una vez al final. La lógica está cubierta por las pruebas automáticas de la sección A.
+> This test is long; it is recommended to run it once at the end. The logic is covered by the automated tests of section A.
+> Shortcut: send a valid `transfer-initiated` for a `Pending` transaction with `infra/local/duplicate-test --raw transfer-initiated <body> 5` (`RetryAttempt = 5`) while the database is offline.
 
-## E. `ProcessError` y cierre ordenado (historia 4, FR-014)
+## E. `ProcessError` and graceful shutdown (story 4, FR-014)
 
-- Con un servicio en marcha, reiniciar el contenedor del emulador (`docker compose restart emulator`): el servicio debe **registrar**
-  el error del procesador (origen, entidad) en lugar de perderlo.
-- Detener un servicio con Ctrl+C mientras procesa: no debe aparecer como fallo del mensaje ni consumir un reintento.
+- With a service running, restart the emulator container (`docker compose restart emulator`): the service must **log**
+  the processor error (origin, entity) instead of losing it.
+- Stop a service with Ctrl+C while it is processing: it must not appear as a failure of the message nor use a retry.
 
-## F. Integración continua
+## F. Continuous integration
 
-Subir la rama y comprobar en la pestaña *Actions* que corren `Build`, `Tests (Transfer)`, `Tests (Transaction)`,
-`Tests (Balance)` y `Tests (Notification)`. Los dos últimos se vuelven obligatorios tras ajustar la protección de ramas y enmendar
-la constitución (acciones manuales; ver [plan.md](plan.md) → *Complexity Tracking*).
+Push the branch and check in the *Actions* tab that `Build`, `Tests (Transfer)`, `Tests (Transaction)`,
+`Tests (Balance)` and `Tests (Notification)` run. The last two become required after adjusting the branch protection and amending
+the constitution (manual actions; see [plan.md](plan.md) → *Complexity Tracking*).
 
-## Criterios de salida
+## Exit criteria
 
-- Secciones A, B y C verificadas; D y E verificadas al menos una vez.
-- `dotnet list package --vulnerable --include-transitive` sigue limpio.
-- Los documentos de estudio (`GUIA-ESTUDIO-Hallazgos-Bank.md`, `HALLAZGOS-PENDIENTES-Bank.md`) actualizados con lo resuelto.
+- Sections A, B and C verified; D and E verified at least once.
+- `dotnet list package --vulnerable --include-transitive` stays clean.
+- The study documents (`GUIA-ESTUDIO-Hallazgos-Bank.md`, `HALLAZGOS-PENDIENTES-Bank.md`, kept outside the repository) updated with what was resolved.

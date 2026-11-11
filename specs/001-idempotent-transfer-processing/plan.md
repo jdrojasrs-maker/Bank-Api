@@ -1,6 +1,6 @@
-# Implementation Plan: Procesamiento idempotente de transferencias
+# Implementation Plan: Idempotent transfer processing
 
-**Branch**: `001-idempotent-transfer-processing` (rama no creada; el trabajo continúa en `wb-feat-s301001`) | **Date**: 2026-11-03 | **Spec**: [spec.md](spec.md)
+**Branch**: `001-idempotent-transfer-processing` (branch not created; the work continues on `wb-feat-s301001`) | **Date**: 2026-11-03 | **Spec**: [spec.md](spec.md)
 
 **Input**: Feature specification from `/specs/001-idempotent-transfer-processing/spec.md`
 
@@ -8,58 +8,58 @@
 
 ## Summary
 
-Requisito principal: un `transfer-initiated` repetido con el mismo `CorrelationId` debe dejar **una sola transferencia y un solo
-resultado**, y una transacción en estado final (`Completed`/`Canceled`) **nunca** debe volver a `Pending` ni disparar eventos por un
-mensaje duplicado o tardío.
+Main requirement: a repeated `transfer-initiated` with the same `CorrelationId` must leave **a single transfer and a single
+result**, and a transaction in a final state (`Completed`/`Canceled`) must **never** go back to `Pending` or trigger events because
+of a duplicate or late message.
 
-Enfoque técnico (detalle en [research.md](research.md)):
-- **Transfer**: nueva tabla `TransferRequest` con índice único por `CorrelationId` que recuerda el resultado (incluidos los rechazos)
-  y el estado de emisión, con un *claim* con *lease* de 30 s para que solo un procesador emita; `CorrelationId` acotado a 64 caracteres
-  con índice único también en `Transfer`.
-- **Transaction**: máquina de estados con transiciones válidas solo desde `Pending`, mediante actualización condicional atómica,
-  emitiendo antes de confirmar la transición para no perder la recuperación; los estados finales se ignoran sin eventos.
-- **Constancia** de mensajes ignorados con registro estructurado; **pruebas automáticas** con SQL Server real en contenedor, un proyecto
-  de pruebas por servicio.
-- Sin cambios en nombres de eventos ni en payloads.
+Technical approach (details in [research.md](research.md)):
+- **Transfer**: new `TransferRequest` table with a unique index by `CorrelationId` that remembers the result (rejections included)
+  and the emission state, with a 30 s *claim* with *lease* so that only one processor emits; `CorrelationId` bounded to 64 characters
+  with a unique index in `Transfer` as well.
+- **Transaction**: state machine with valid transitions only from `Pending`, through an atomic conditional update,
+  emitting before confirming the transition so that recovery is not lost; final states are ignored without events.
+- **Record** of ignored messages with structured logging; **automated tests** with a real SQL Server in a container, one test project
+  per service.
+- No changes to event names or payloads.
 
 ## Technical Context
 
-**Language/Version**: C# / .NET 10 (`net10.0`), nullable e implicit usings habilitados
+**Language/Version**: C# / .NET 10 (`net10.0`), nullable and implicit usings enabled
 
-**Primary Dependencies**: ASP.NET Core (Web SDK), EF Core 10.0.12 (SqlServer), Azure.Messaging.ServiceBus 7.21.0, MediatR 14.2.0, Newtonsoft.Json 13.0.4. Pruebas: xUnit, Microsoft.NET.Test.Sdk y Testcontainers para SQL Server (versiones por fijar al implementar; no verificadas en esta sesión)
+**Primary Dependencies**: ASP.NET Core (Web SDK), EF Core 10.0.12 (SqlServer), Azure.Messaging.ServiceBus 7.21.0, MediatR 14.2.0, Newtonsoft.Json 13.0.4. Tests: xUnit, Microsoft.NET.Test.Sdk and Testcontainers for SQL Server (versions to be pinned when implementing; not verified in this session)
 
-**Storage**: SQL Server (una base por servicio: `BankTransfer`, `BankTransaction`); migraciones de EF Core por servicio
+**Storage**: SQL Server (one database per service: `BankTransfer`, `BankTransaction`); EF Core migrations per service
 
-**Testing**: xUnit con SQL Server real en contenedor (Docker) y un doble de `IServiceBusSenderService`; un proyecto por servicio. Hoy no existe proyecto de pruebas
+**Testing**: xUnit with a real SQL Server in a container (Docker) and a double of `IServiceBusSenderService`; one project per service. There is no test project today
 
-**Target Platform**: servicios .NET en el host (local con `dotnet run --launch-profile http`), con emulador de Azure Service Bus y SQL Server en contenedores
+**Target Platform**: .NET services on the host (locally with `dotnet run --launch-profile http`), with an Azure Service Bus emulator and SQL Server in containers
 
-**Project Type**: microservicios dirigidos por eventos (solución `Bank.slnx`); aquí se modifican dos servicios
+**Project Type**: event-driven microservices (solution `Bank.slnx`); two services are modified here
 
-**Performance Goals**: sin objetivo cuantitativo propio; el costo añadido por mensaje es una consulta indexada y de una a tres escrituras pequeñas
+**Performance Goals**: no quantitative goal of its own; the cost added per message is one indexed query and one to three small writes
 
-**Constraints**: sin referencias de proyecto ni HTTP entre servicios; sin cambios de contrato de eventos; migraciones aplicadas por comando; reintentos inmediatos de la mensajería (hallazgo 1) siguen vigentes; `LockDuration` de las suscripciones = 1 min
+**Constraints**: no project references or HTTP between services; no changes to the event contract; migrations applied by command; the immediate retries of the messaging system (finding 1) remain in force; `LockDuration` of the subscriptions = 1 min
 
-**Scale/Scope**: dos servicios (Transfer y Transaction), 2 migraciones, 1 tabla nueva, 2 proyectos de pruebas; Balance, Notification y Gateway fuera de alcance
+**Scale/Scope**: two services (Transfer and Transaction), 2 migrations, 1 new table, 2 test projects; Balance, Notification and Gateway out of scope
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-| Principio / regla | Evaluación previa a la investigación | Reevaluación tras el diseño |
+| Principle / rule | Assessment before research | Re-assessment after the design |
 |---|---|---|
-| I. Desacoplados solo por eventos | ✅ Solo cambia el comportamiento ante eventos; sin referencias ni HTTP entre servicios | ✅ Cada proyecto de pruebas referencia únicamente a su servicio; sin cambios de contrato |
-| II. Idempotentes por `CorrelationId` | ✅ Es el objetivo de la feature | ✅ Índice único en la base + tabla de solicitudes + *claim*; la búsqueda previa no es la única garantía |
-| III. Todo camino de error emite su fallo | ⚠️ Los mensajes sin `CorrelationId` no admiten un evento de fallo correlacionable | ⚠️ Desviación justificada (ver *Complexity Tracking*). Los rechazos permanentes siguen emitiendo `*-failed` y, ahora, **una sola vez** |
-| IV. Cada servicio es dueño de su BD | ✅ | ✅ `TransferRequest` y los índices viven en la base de su servicio |
-| V. Toda corrección lleva prueba automática | ✅ Se crean los proyectos de pruebas que hoy no existen | ✅ Cada escenario de la spec tiene prueba (ver `quickstart.md`); las pruebas se escriben antes que el código |
-| Restricciones técnicas: contrato de eventos | ✅ | ✅ Mismos nombres y campos (`contracts/events.md`); no se toca `Config.json` |
-| Restricciones técnicas: secretos | ✅ | ✅ Las pruebas usan credenciales efímeras del contenedor; ningún secreto en el repo |
-| Restricciones técnicas: migraciones por comando | ✅ | ✅ Dos migraciones nuevas, aplicadas con `apply-migrations.ps1` |
-| Flujo: deuda técnica solo se señala | ✅ | ✅ No se corrigen reintentos sin espera, Outbox ni idempotencia de Balance; se señalan |
-| Flujo: sin commits sin orden expresa | ✅ | ✅ |
+| I. Decoupled by events only | ✅ Only the behavior on events changes; no references or HTTP between services | ✅ Each test project references only its service; no contract changes |
+| II. Idempotent by `CorrelationId` | ✅ It is the goal of the feature | ✅ Unique index in the database + requests table + *claim*; the prior lookup is not the only guarantee |
+| III. Every error path emits its failure | ⚠️ Messages without `CorrelationId` do not admit a correlatable failure event | ⚠️ Justified deviation (see *Complexity Tracking*). Permanent rejections keep emitting `*-failed` and, now, **only once** |
+| IV. Each service owns its DB | ✅ | ✅ `TransferRequest` and the indexes live in their service's database |
+| V. Every fix comes with an automated test | ✅ The test projects that do not exist today are created | ✅ Each scenario of the spec has a test (see `quickstart.md`); tests are written before the code |
+| Technical constraints: event contract | ✅ | ✅ Same names and fields (`contracts/events.md`); `Config.json` is not touched |
+| Technical constraints: secrets | ✅ | ✅ The tests use the container's ephemeral credentials; no secret in the repo |
+| Technical constraints: migrations by command | ✅ | ✅ Two new migrations, applied with `apply-migrations.ps1` |
+| Workflow: technical debt is only pointed out | ✅ | ✅ Retries without wait, Outbox and Balance idempotency are not fixed; they are pointed out |
+| Workflow: no commits without an express order | ✅ | ✅ |
 
-**Resultado**: ✅ Sin violaciones bloqueantes. Una desviación justificada registrada abajo.
+**Result**: ✅ No blocking violations. One justified deviation recorded below.
 
 ## Project Structure
 
@@ -74,7 +74,7 @@ specs/001-idempotent-transfer-processing/
 ├── contracts/
 │   └── events.md        # Phase 1 output (/speckit-plan command)
 ├── checklists/
-│   └── requirements.md  # Calidad de la especificación (/speckit-specify)
+│   └── requirements.md  # Specification quality (/speckit-specify)
 └── tasks.md             # Phase 2 output (/speckit-tasks command - NOT created by /speckit-plan)
 ```
 
@@ -84,32 +84,32 @@ specs/001-idempotent-transfer-processing/
 src/
 ├── Bank.Transfer/Bank.Transfer.Api/
 │   ├── Domain/
-│   │   ├── Constants/            # + resultado (Confirmed/Failed) y EMISSION_LEASE
+│   │   ├── Constants/            # + result (Confirmed/Failed) and EMISSION_LEASE
 │   │   └── Entities/             # + TransferRequestEntity
 │   ├── Application/
-│   │   ├── Database/             # IDatabaseService: + DbSet de TransferRequest
-│   │   └── Features/Process/     # ProcessService (reescribe TransferInitiated); DatabaseErrors (+ violación de unicidad)
+│   │   ├── Database/             # IDatabaseService: + TransferRequest DbSet
+│   │   └── Features/Process/     # ProcessService (rewrites TransferInitiated); DatabaseErrors (+ uniqueness violation)
 │   └── Persistence/
-│       ├── Database/             # DatabaseService: longitud e índices únicos
-│       └── Migrations/           # + migración AddIdempotency
+│       ├── Database/             # DatabaseService: length and unique indexes
+│       └── Migrations/           # + AddIdempotency migration
 └── Bank.Transaction/Bank.Transaction.Api/
     ├── Application/
-    │   └── Features/Process/     # ProcessService (máquina de estados); DatabaseErrors (+ violación de unicidad)
+    │   └── Features/Process/     # ProcessService (state machine); DatabaseErrors (+ uniqueness violation)
     └── Persistence/
-        ├── Database/             # DatabaseService: longitud e índice único
-        └── Migrations/           # + migración AddCorrelationIdUniqueness
+        ├── Database/             # DatabaseService: length and unique index
+        └── Migrations/           # + AddCorrelationIdUniqueness migration
 
 tests/
-├── Bank.Transfer.Api.Tests/      # nuevo: escenarios de las historias 1 y 3 y casos límite
-└── Bank.Transaction.Api.Tests/   # nuevo: escenarios de la historia 2
+├── Bank.Transfer.Api.Tests/      # new: scenarios of stories 1 and 3 and edge cases
+└── Bank.Transaction.Api.Tests/   # new: scenarios of story 2
 
-Bank.slnx                         # + los dos proyectos de pruebas
-CLAUDE.md, README.md              # actualizar: ya existen pruebas y cómo ejecutarlas
+Bank.slnx                         # + the two test projects
+CLAUDE.md, README.md              # update: tests now exist and how to run them
 ```
 
-**Structure Decision**: se respeta la estructura por servicio de `CLAUDE.md` (`Domain/`, `Application/`, `Persistence/`); la lógica va en
-`ProcessService` y la entidad nueva en `Domain/Entities`. Los proyectos de pruebas viven en `tests/`, **uno por servicio**, para que
-ningún proyecto referencie a más de un servicio.
+**Structure Decision**: the per-service structure of `CLAUDE.md` is respected (`Domain/`, `Application/`, `Persistence/`); the logic goes in
+`ProcessService` and the new entity in `Domain/Entities`. The test projects live in `tests/`, **one per service**, so that
+no project references more than one service.
 
 ## Complexity Tracking
 
@@ -117,6 +117,6 @@ ningún proyecto referencie a más de un servicio.
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
-| Principio III: un mensaje sin `CorrelationId` o ilegible se registra y se completa sin emitir `*-failed` | Sin identificador no existe evento de fallo que se pueda correlacionar con ninguna transferencia, y reintentarlo 10 veces es inútil | Mandarlo a la DLQ con motivo `PoisonMessage` es más correcto, pero exige modificar el receptor de cada servicio (hallazgo 4, otra feature) |
-| Dos proyectos de pruebas nuevos en lugar de uno | Mantener el Principio I estricto: ningún proyecto referencia a más de un servicio | Un único proyecto referenciaría Transfer y Transaction a la vez |
-| Tabla `TransferRequest` además de `Transfer` | Recordar rechazos y el estado de emisión (historias 1 y 3); un rechazo no deja fila en `Transfer` | Columnas extra en `Transfer` no pueden recordar un rechazo (`research.md` R2) |
+| Principle III: a message without `CorrelationId` or unreadable is recorded and completed without emitting `*-failed` | Without an identifier there is no failure event that can be correlated with any transfer, and retrying it 10 times is useless | Sending it to the DLQ with reason `PoisonMessage` is more correct, but requires modifying each service's receiver (finding 4, another feature) |
+| Two new test projects instead of one | Keep Principle I strict: no project references more than one service | A single project would reference Transfer and Transaction at the same time |
+| `TransferRequest` table in addition to `Transfer` | Remember rejections and the emission state (stories 1 and 3); a rejection leaves no row in `Transfer` | Extra columns in `Transfer` cannot remember a rejection (`research.md` R2) |

@@ -1,75 +1,75 @@
-# Modelo de datos (Fase 1): Procesamiento idempotente de transferencias
+# Data model (Phase 1): Idempotent transfer processing
 
-Cada servicio es dueño de su base (Principio IV): no se comparte ninguna tabla. Los cambios son migraciones de EF Core por servicio.
+Each service owns its database (Principle IV): no table is shared. The changes are EF Core migrations per service.
 
-## Base `BankTransfer`
+## `BankTransfer` database
 
-### `Transfer` (cambia)
-| Campo | Tipo | Cambio |
+### `Transfer` (changes)
+| Field | Type | Change |
 |---|---|---|
-| `CorrelationId` | `nvarchar(64)` NOT NULL | Pasa de `nvarchar(max)` a longitud acotada (`HasMaxLength(64)`) y **índice único** `IX_Transfer_CorrelationId` |
-| resto de campos | sin cambios | `Id`, `TransferDate`, `CurrentState` (`Complete`), `Amount`, `SourceAccount`, `DestinationAccount`, `CustomerId` |
+| `CorrelationId` | `nvarchar(64)` NOT NULL | Goes from `nvarchar(max)` to a bounded length (`HasMaxLength(64)`) and a **unique index** `IX_Transfer_CorrelationId` |
+| remaining fields | unchanged | `Id`, `TransferDate`, `CurrentState` (`Complete`), `Amount`, `SourceAccount`, `DestinationAccount`, `CustomerId` |
 
-Regla (FR-001): como máximo una fila por `CorrelationId`.
+Rule (FR-001): at most one row per `CorrelationId`.
 
-### `TransferRequest` (nueva; registro de solicitudes procesadas)
-| Campo | Tipo | Descripción |
+### `TransferRequest` (new; record of processed requests)
+| Field | Type | Description |
 |---|---|---|
 | `Id` | `int` identity, PK | |
-| `CorrelationId` | `nvarchar(64)` NOT NULL, **índice único** `IX_TransferRequest_CorrelationId` | Clave de idempotencia |
-| `Outcome` | `nvarchar(16)` NOT NULL | `Confirmed` o `Failed`: resultado decidido en el primer procesamiento |
-| `PayloadFingerprint` | `nvarchar(64)` NOT NULL | SHA-256 en hexadecimal de `Amount|SourceAccount|DestinationAccount|CustomerId`; detecta contenido distinto con el mismo identificador (FR-008) |
-| `CreatedAt` | `datetime2` NOT NULL | Momento del registro |
-| `ClaimedAt` | `datetime2` NULL | Momento en que un procesador tomó la emisión (inicio del lease) |
-| `EmittedAt` | `datetime2` NULL | Momento en que el resultado quedó emitido; una vez informado **no se borra** |
+| `CorrelationId` | `nvarchar(64)` NOT NULL, **unique index** `IX_TransferRequest_CorrelationId` | Idempotency key |
+| `Outcome` | `nvarchar(16)` NOT NULL | `Confirmed` or `Failed`: result decided at the first processing |
+| `PayloadFingerprint` | `nvarchar(64)` NOT NULL | SHA-256 in hexadecimal of `Amount|SourceAccount|DestinationAccount|CustomerId`; detects different content with the same identifier (FR-008) |
+| `CreatedAt` | `datetime2` NOT NULL | Moment of the record |
+| `ClaimedAt` | `datetime2` NULL | Moment a processor took the emission (start of the lease) |
+| `EmittedAt` | `datetime2` NULL | Moment the result was emitted; once reported it is **not erased** |
 
-Relación: una fila `Transfer` existe solo si `Outcome = Confirmed`; el registro de ambas se hace en la **misma transacción**.
-Un rechazo (`Failed`) solo deja fila en `TransferRequest`.
+Relationship: a `Transfer` row exists only if `Outcome = Confirmed`; both are recorded in the **same transaction**.
+A rejection (`Failed`) leaves a row only in `TransferRequest`.
 
-#### Ciclo de vida de `TransferRequest`
+#### `TransferRequest` lifecycle
 
 ```text
-(no existe) --registro atómico--> Registrada(ClaimedAt = t0, EmittedAt = NULL)
-Registrada --emisión correcta--> Emitida (EmittedAt = t1)            [estado terminal]
-Registrada --fallo al emitir--> Registrada (ClaimedAt = NULL)         [la reentrega puede recuperar]
-Registrada --lease vencido (ClaimedAt < ahora - 30 s)--> Registrada (nuevo ClaimedAt)  [recuperación tras caída]
+(does not exist) --atomic record--> Recorded(ClaimedAt = t0, EmittedAt = NULL)
+Recorded --successful emission--> Emitted (EmittedAt = t1)            [terminal state]
+Recorded --emission failure--> Recorded (ClaimedAt = NULL)             [the redelivery can recover]
+Recorded --lease expired (ClaimedAt < now - 30 s)--> Recorded (new ClaimedAt)  [recovery after a crash]
 ```
 
-Operaciones atómicas (actualizaciones condicionales; devuelven filas afectadas):
-- **Claim**: `ClaimedAt = ahora` donde `Id = @id AND EmittedAt IS NULL AND (ClaimedAt IS NULL OR ClaimedAt < ahora - lease)`. 1 fila ⇒ se toma la emisión.
-- **Marcar emitida**: `EmittedAt = ahora` donde `Id = @id AND EmittedAt IS NULL`.
-- **Liberar**: `ClaimedAt = NULL` donde `Id = @id AND EmittedAt IS NULL`.
+Atomic operations (conditional updates; they return affected rows):
+- **Claim**: `ClaimedAt = now` where `Id = @id AND EmittedAt IS NULL AND (ClaimedAt IS NULL OR ClaimedAt < now - lease)`. 1 row ⇒ the emission is taken.
+- **Mark emitted**: `EmittedAt = now` where `Id = @id AND EmittedAt IS NULL`.
+- **Release**: `ClaimedAt = NULL` where `Id = @id AND EmittedAt IS NULL`.
 
-Constante de dominio: `EMISSION_LEASE = 30 s`.
+Domain constant: `EMISSION_LEASE = 30 s`.
 
-#### Árbol de decisión de `transfer-initiated`
+#### `transfer-initiated` decision tree
 
-| Situación al llegar el mensaje | Acción | Evento | Motivo registrado |
+| Situation when the message arrives | Action | Event | Recorded reason |
 |---|---|---|---|
-| Sin `CorrelationId` o ilegible | Nada; completar | ninguno | `InvalidMessage` |
-| No existe `TransferRequest` | Registrar `Transfer` + `TransferRequest(Confirmed)` atómicamente | `transfer-confirmed` | — |
-| ídem, y el registro lanza error **permanente** | Registrar solo `TransferRequest(Failed)` | `transfer-failed` | — |
-| ídem, y el registro lanza **violación de unicidad** | Era un duplicado simultáneo; completar | ninguno | `DuplicateInProgress` |
-| ídem, y el error es **transitorio** | Propagar (la mensajería reintenta) | ninguno | — |
-| Existe, `EmittedAt` informado | Completar | ninguno | `DuplicateAlreadyEmitted` |
-| Existe, sin emitir, lease **vigente** | Completar | ninguno | `DuplicateInProgress` |
-| Existe, sin emitir, lease **vencido**, *claim* logrado | Emitir el `Outcome` guardado; marcar emitida | `transfer-confirmed` o `transfer-failed` | `RecoveredEmission` (informativo) |
-| Existe, huella distinta | Como las filas anteriores y, además, registrar | según corresponda | `ContentMismatch` |
+| No `CorrelationId` or unreadable | Nothing; complete | none | `InvalidMessage` |
+| `TransferRequest` does not exist | Record `Transfer` + `TransferRequest(Confirmed)` atomically | `transfer-confirmed` | — |
+| same, and the record throws a **permanent** error | Record only `TransferRequest(Failed)` | `transfer-failed` | — |
+| same, and the record throws a **uniqueness violation** | It was a simultaneous duplicate; complete | none | `DuplicateInProgress` |
+| same, and the error is **transient** | Propagate (messaging retries) | none | — |
+| Exists, `EmittedAt` filled in | Complete | none | `DuplicateAlreadyEmitted` |
+| Exists, not emitted, lease **valid** | Complete | none | `DuplicateInProgress` |
+| Exists, not emitted, lease **expired**, *claim* obtained | Emit the stored `Outcome`; mark emitted | `transfer-confirmed` or `transfer-failed` | `RecoveredEmission` (informational) |
+| Exists, different fingerprint | Like the previous rows and, in addition, record | as appropriate | `ContentMismatch` |
 
-## Base `BankTransaction`
+## `BankTransaction` database
 
-### `Transaction` (cambia)
-| Campo | Tipo | Cambio |
+### `Transaction` (changes)
+| Field | Type | Change |
 |---|---|---|
-| `CorrelationId` | `nvarchar(64)` NOT NULL | Acotado y **índice único** `IX_Transaction_CorrelationId` |
-| `CurrentState` | texto | Sin cambio de tipo; ahora gobernado por la máquina de estados |
-| resto de campos | sin cambios | |
+| `CorrelationId` | `nvarchar(64)` NOT NULL | Bounded and **unique index** `IX_Transaction_CorrelationId` |
+| `CurrentState` | text | No type change; now governed by the state machine |
+| remaining fields | unchanged | |
 
-### Máquina de estados de `Transaction`
+### `Transaction` state machine
 
 ```text
             transaction-initiated
-(no existe) ----------------------> Pending --balance-confirmed--> Pending (avanza el flujo)
+(does not exist) ----------------------> Pending --balance-confirmed--> Pending (the flow advances)
                                        |
                  transfer-confirmed    |    balance-failed / transfer-failed
                        v               |               v
@@ -77,28 +77,28 @@ Constante de dominio: `EMISSION_LEASE = 30 s`.
                    (final)                          (final)
 ```
 
-| Mensaje | Estado actual | Resultado | Eventos emitidos |
+| Message | Current state | Result | Events emitted |
 |---|---|---|---|
-| `transaction-initiated` | no existe | Inserta `Pending` | `balance-initiated` |
-| `transaction-initiated` (repetido) | `Pending` | Sin cambio de estado | `balance-initiated` (recuperación: entrega al menos una vez) |
-| `transaction-initiated` (repetido) | `Completed` / `Canceled` | **Ignorado** | ninguno (`FinalStateProtected`) |
-| `balance-confirmed` | `Pending` | Sin cambio de estado | `transfer-initiated` |
+| `transaction-initiated` | does not exist | Inserts `Pending` | `balance-initiated` |
+| `transaction-initiated` (repeated) | `Pending` | No state change | `balance-initiated` (recovery: at-least-once delivery) |
+| `transaction-initiated` (repeated) | `Completed` / `Canceled` | **Ignored** | none (`FinalStateProtected`) |
+| `balance-confirmed` | `Pending` | No state change | `transfer-initiated` |
 | `balance-failed` | `Pending` | → `Canceled` | `transaction-failed` |
 | `transfer-failed` | `Pending` | → `Canceled` | `transaction-failed`, `transfer-failed-balance` |
 | `transfer-confirmed` | `Pending` | → `Completed` | `transaction-completed`, `transfer-confirmed-balance` |
-| cualquier mensaje | `Completed` / `Canceled` | **Ignorado**, nunca cambia de estado (incluido hacia el otro estado final) | ninguno (`FinalStateProtected`) |
-| cualquiera salvo `transaction-initiated` | no existe | **Ignorado** | ninguno (`NoSuchTransaction`) |
+| any message | `Completed` / `Canceled` | **Ignored**, never changes state (including to the other final state) | none (`FinalStateProtected`) |
+| anything except `transaction-initiated` | does not exist | **Ignored** | none (`NoSuchTransaction`) |
 
-Orden de operaciones para las transiciones `Pending → final`: leer estado → emitir eventos → transición condicional
-(`WHERE CorrelationId = @id AND CurrentState = 'Pending'`). Si la transición devuelve 0 filas tras emitir, otra entrega
-ya la aplicó: se registra y se termina (ver `research.md` R4).
+Order of operations for the `Pending → final` transitions: read state → emit events → conditional transition
+(`WHERE CorrelationId = @id AND CurrentState = 'Pending'`). If the transition returns 0 rows after emitting, another delivery
+already applied it: it is recorded and that is the end (see `research.md` R4).
 
-## Entidades de la especificación → modelo
+## Spec entities → model
 
-| Entidad de la spec | Modelo |
+| Spec entity | Model |
 |---|---|
-| Transferencia | `Transfer` |
-| Transacción | `Transaction` |
-| Mensaje de inicio de transferencia | Evento `transfer-initiated` (ver `contracts/events.md`) |
-| Resultado de transferencia | Eventos `transfer-confirmed` / `transfer-failed`; su estado de emisión vive en `TransferRequest` |
-| Constancia de mensaje ignorado | Registro estructurado (`ILogger`) con `CorrelationId`, `MessageType`, `Reason` |
+| Transfer | `Transfer` |
+| Transaction | `Transaction` |
+| Transfer start message | `transfer-initiated` event (see `contracts/events.md`) |
+| Transfer result | `transfer-confirmed` / `transfer-failed` events; their emission state lives in `TransferRequest` |
+| Ignored-message record | Structured log (`ILogger`) with `CorrelationId`, `MessageType`, `Reason` |

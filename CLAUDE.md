@@ -1,28 +1,28 @@
 # CLAUDE.md
 
-Guía para trabajar en este repositorio. El flujo completo y el diagrama Mermaid están en [README.md](README.md).
+Guide for working in this repository. The full flow and the Mermaid diagram are in [README.md](README.md).
 
-## Visión general
+## Overview
 
-Microservicios .NET 10 (`net10.0`, nullable + implicit usings) con arquitectura dirigida por eventos sobre **Azure Service Bus** (en local, su emulador; ver "Entorno local"). Saga coreografiada para una transferencia:
+.NET 10 microservices (`net10.0`, nullable + implicit usings) with an event-driven architecture on **Azure Service Bus** (locally, its emulator; see "Local environment"). Choreographed saga for a transfer:
 `Gateway → Transaction → Balance → Transaction → Transfer → Transaction → Notification (+ Balance)`.
 
-Solución: `Bank.slnx`. Servicios en `src/Bank.<Servicio>/Bank.<Servicio>.Api/` (Gateway usa `.API`).
-`src/Bank.Notification/Bank.Notification` es una plantilla sin uso fuera de la solución: no tocarla ni basarse en ella.
+Solution: `Bank.slnx`. Services in `src/Bank.<Service>/Bank.<Service>.Api/` (Gateway uses `.API`).
+`src/Bank.Notification/Bank.Notification` is an unused template outside the solution: do not touch it or base anything on it.
 
-## Comandos
+## Commands
 
 ```bash
 dotnet build Bank.slnx
-dotnet run --project src/Bank.<Servicio>/Bank.<Servicio>.Api --launch-profile http
-dotnet user-secrets set "<CLAVE>" "<valor>" --project <proyecto>
+dotnet run --project src/Bank.<Service>/Bank.<Service>.Api --launch-profile http
+dotnet user-secrets set "<KEY>" "<value>" --project <project>
 ```
 
-Siempre correr los servicios en el host con el perfil **`http`**. El perfil "Container (Dockerfile)" de Visual Studio no sirve en local: dentro del contenedor `localhost` no alcanza el emulador ni SQL (síntoma: `Connection refused` en `ServiceBusSenderService`).
+Always run the services on the host with the **`http`** profile. The Visual Studio "Container (Dockerfile)" profile does not work locally: inside the container `localhost` reaches neither the emulator nor SQL (symptom: `Connection refused` in `ServiceBusSenderService`).
 
-Puertos (perfil `http`): Gateway 5204, Transaction 5110, Balance 5287, Transfer 5197, Notification 5267. El endpoint de entrada es `POST http://localhost:5204/api-gateway`.
+Ports (`http` profile): Gateway 5204, Transaction 5110, Balance 5287, Transfer 5197, Notification 5267. The entry endpoint is `POST http://localhost:5204/api-gateway`.
 
-Pruebas automáticas (un proyecto por servicio: Transfer, Transaction, Balance y Notification). Usan xUnit; Transfer, Transaction y Balance usan un SQL Server real en contenedor (Testcontainers) con las migraciones reales, por lo que **requieren Docker en marcha** (las de Notification no usan base de datos):
+Automated tests (one project per service: Transfer, Transaction, Balance and Notification). They use xUnit; Transfer, Transaction and Balance use a real SQL Server in a container (Testcontainers) with the real migrations, so they **require Docker to be running** (the Notification tests do not use a database):
 
 ```bash
 dotnet test tests/Bank.Transfer.Api.Tests
@@ -31,131 +31,135 @@ dotnet test tests/Bank.Balance.Api.Tests
 dotnet test tests/Bank.Notification.Api.Tests
 ```
 
-Ningún proyecto de pruebas debe referenciar a más de un servicio. Toda corrección lleva su prueba (ver `.specify/memory/constitution.md`, Principio V).
+No test project may reference more than one service. Every fix comes with its test (see `.specify/memory/constitution.md`, Principle V).
 
-## Configuración
+## Configuration
 
-Toda la configuración sensible llega por user-secrets / variables de entorno (claves en MAYÚSCULAS: `SERVICEBUSCONSTR`, `SERVICEBUSTOPIC`, `*SQLDBCONSTR`, `NOTIFICATIONDB*`, `SENDGRID*`). **Nunca** poner secretos en `appsettings*.json` ni en commits. No leer ni mostrar valores de secretos o del `.env`; al verificarlos, ocultar contraseñas.
+All sensitive configuration arrives through user-secrets / environment variables (UPPERCASE keys: `SERVICEBUSCONSTR`, `SERVICEBUSTOPIC`, `*SQLDBCONSTR`, `NOTIFICATIONDB*`, `SENDGRID*`). **Never** put secrets in `appsettings*.json` or in commits. Do not read or display the values of secrets or of `.env`; when verifying them, mask passwords.
 
-Estado actual de los user-secrets (los recursos de Azure originales ya no existen):
+Current state of the user-secrets (the original Azure resources no longer exist):
 
-| Clave | Valor actual |
+| Key | Current value |
 |---|---|
-| `SERVICEBUSCONSTR` (los 5 servicios) | Emulador local: `Endpoint=sb://localhost;...;UseDevelopmentEmulator=true;` |
-| `SERVICEBUSTOPIC` (los 5) | `bank-transfer` |
-| `TRANSACTIONSQLDBCONSTR` / `BALANCESQLDBCONSTR` / `TRANSFERSQLDBCONSTR` | `Server=127.0.0.1,1433;Database=BankTransaction` / `BankBalance` / `BankTransfer`; usuario `sa`, `TrustServerCertificate=True` |
-| `NOTIFICATIONDB*`, `SENDGRID*` | **Pendientes**: Cosmos DB y SendGrid aún no se trabajan; Notification no funcionará de punta a punta. No intentar arreglarlo sin que se pida. |
+| `SERVICEBUSCONSTR` (all 5 services) | Local emulator: `Endpoint=sb://localhost;...;UseDevelopmentEmulator=true;` |
+| `SERVICEBUSTOPIC` (all 5) | `bank-transfer` |
+| `TRANSACTIONSQLDBCONSTR` / `BALANCESQLDBCONSTR` / `TRANSFERSQLDBCONSTR` | `Server=127.0.0.1,1433;Database=BankTransaction` / `BankBalance` / `BankTransfer`; user `sa`, `TrustServerCertificate=True` |
+| `NOTIFICATIONDB*`, `SENDGRID*` | **Pending**: Cosmos DB and SendGrid are not being worked on yet; Notification will not work end to end. Do not try to fix it unless asked. |
 
-Usar `127.0.0.1`, no `localhost`: `localhost` resuelve primero a `::1` (IPv6) y el puerto solo se publica en IPv4, lo que produce timeouts.
+Use `127.0.0.1`, not `localhost`: `localhost` resolves to `::1` (IPv6) first and the port is published only on IPv4, which causes timeouts.
 
-## Entorno local (`infra/local/`)
+## Local environment (`infra/local/`)
 
-Todo el entorno local vive aquí; los servicios corren en el host con `dotnet run` y usan lo siguiente en contenedores:
+The whole local environment lives here; the services run on the host with `dotnet run` and use the following in containers:
 
-| Archivo | Para qué |
+| File | Purpose |
 |---|---|
-| `Config.json` | Entidades del emulador de Service Bus: namespace `sbemulatorns`, topic `bank-transfer` y 11 suscripciones (una por evento), cada una con una regla `CorrelationFilter` cuyo `Label` es el nombre del evento (equivale al `Subject` del mensaje). |
-| `docker-compose.yml` | Dos contenedores: `bank-sqlserver` (`mssql/server:2022-latest`, publicado en `127.0.0.1:1433`) y `bank-servicebus-emulator` (puertos `5672` AMQP y `5300` health/admin). El emulador usa SQL Server como almacenamiento interno y espera a que esté `healthy`. |
-| `.env.example` | Plantilla de variables. Copiar a `.env` (ignorado por git) y poner `SQL_PASSWORD` (mín. 8 caracteres y 3 de 4 clases: mayúsculas, minúsculas, números, símbolos). **`.env.example` nunca lleva contraseña.** |
-| `apply-migrations.ps1` | Aplica las migraciones de EF Core a las tres bases de datos. |
-| `smoke-test/` | App de consola que verifica que el enrutamiento por `Subject`/`Label` funciona (`dotnet run`, 4 comprobaciones `[OK]`). |
+| `Config.json` | Service Bus emulator entities: namespace `sbemulatorns`, topic `bank-transfer` and 11 subscriptions (one per event), each with a `CorrelationFilter` rule whose `Label` is the event name (equivalent to the message `Subject`). |
+| `docker-compose.yml` | Two containers: `bank-sqlserver` (`mssql/server:2022-latest`, published on `127.0.0.1:1433`) and `bank-servicebus-emulator` (ports `5672` AMQP and `5300` health/admin). The emulator uses SQL Server as internal storage and waits for it to be `healthy`. |
+| `.env.example` | Variables template. Copy to `.env` (ignored by git) and set `SQL_PASSWORD` (min. 8 characters and 3 of 4 classes: uppercase, lowercase, digits, symbols). **`.env.example` never contains a password.** |
+| `apply-migrations.ps1` | Applies the EF Core migrations to the three databases. |
+| `smoke-test/` | Console app that verifies that routing by `Subject`/`Label` works (`dotnet run`, 4 `[OK]` checks). |
 
-### Operación
+### Operation
 
 ```powershell
 cd infra/local
-docker compose up -d                  # SQL Server + emulador
-.\apply-migrations.ps1                # crear/actualizar esquema (tras cada "down")
-curl.exe http://localhost:5300/health # 200 = emulador listo
-docker compose restart emulator       # tras editar Config.json
-docker compose down                   # apagar (borra todo, ver abajo)
+docker compose up -d                  # SQL Server + emulator
+.\apply-migrations.ps1                # create/update the schema (after every "down")
+curl.exe http://localhost:5300/health # 200 = emulator ready
+docker compose restart emulator       # after editing Config.json
+docker compose down                   # shut down (wipes everything, see below)
 ```
 
-Cadena del emulador: `Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;`
+Emulator connection string: `Endpoint=sb://localhost;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=SAS_KEY_VALUE;UseDevelopmentEmulator=true;`
 
-### Comportamientos que no son obvios
+### Non-obvious behaviors
 
-- **Sin persistencia** (documentado por Microsoft): tras reiniciar el emulador se pierden mensajes y entidades; solo se recrean las del `Config.json`. SQL Server tampoco tiene volumen: `docker compose down` borra las tres bases, así que hay que volver a ejecutar `apply-migrations.ps1`.
-- **Si se recrea el contenedor de SQL, reiniciar también el emulador** (`docker compose restart emulator`): su metadata vivía en esa base.
-- Los cambios en `Config.json` no se aplican en caliente: requieren reiniciar el emulador. El `Config.json` prevalece sobre entidades creadas con el Administration Client (soportado de forma nativa solo en .NET, con el puerto 5300 en la cadena).
-- Límites del emulador: un único namespace (`sbemulatorns`, no renombrable), 50 suscripciones por topic, mensaje de 256 KB, TTL máximo 1 h, 10 conexiones concurrentes, solo AMQP sobre TCP, sin Entra ID.
-- Al añadir o renombrar un evento: actualizar constantes en emisor y receptor, `infra/local/Config.json` (suscripción + regla) y la tabla del README.
+- **No persistence** (documented by Microsoft): after restarting the emulator, messages and entities are lost; only those in `Config.json` are recreated. SQL Server has no volume either: `docker compose down` wipes the three databases, so `apply-migrations.ps1` must be run again.
+- **If the SQL container is recreated, restart the emulator too** (`docker compose restart emulator`): its metadata lived in that database.
+- Changes to `Config.json` are not applied live: they require restarting the emulator. `Config.json` takes precedence over entities created with the Administration Client (natively supported only in .NET, with port 5300 in the connection string).
+- Emulator limits: a single namespace (`sbemulatorns`, cannot be renamed), 50 subscriptions per topic, 256 KB messages, maximum TTL of 1 h, 10 concurrent connections, AMQP over TCP only, no Entra ID.
+- When adding or renaming an event: update the constants in sender and receiver, `infra/local/Config.json` (subscription + rule) and the README table.
 
-### Migraciones de EF Core (Transaction, Balance, Transfer)
+### EF Core migrations (Transaction, Balance, Transfer)
 
-- Herramienta fijada en `dotnet-tools.json` (`dotnet-ef` 10.0.12); usar `dotnet tool run dotnet-ef ...` desde la raíz, no la global.
-- Cada servicio tiene su migración en `Persistence/Migrations`. Para un cambio de modelo:
+- Tool pinned in `dotnet-tools.json` (`dotnet-ef` 10.0.12); use `dotnet tool run dotnet-ef ...` from the root, not the global one.
+- Each service has its migration in `Persistence/Migrations`. For a model change:
   ```powershell
-  dotnet tool run dotnet-ef migrations add <Nombre> --project src/Bank.<Servicio>/Bank.<Servicio>.Api --output-dir Persistence/Migrations
+  dotnet tool run dotnet-ef migrations add <Name> --project src/Bank.<Service>/Bank.<Service>.Api --output-dir Persistence/Migrations
   .\infra\local\apply-migrations.ps1
   ```
-- `Microsoft.EntityFrameworkCore.Design` es dependencia solo de desarrollo (`PrivateAssets=all`).
-- Las migraciones se aplican por comando, no al arrancar el servicio.
-- Notification usa Cosmos DB, sin migraciones.
+- `Microsoft.EntityFrameworkCore.Design` is a development-only dependency (`PrivateAssets=all`).
+- Migrations are applied by command, not when the service starts.
+- Notification uses Cosmos DB, with no migrations.
 
-## Integración continua (GitHub Actions)
+## Continuous integration (GitHub Actions)
 
-`.github/workflows/ci.yml` se ejecuta en cada pull request hacia `main` o `develop` y en cada push a esas ramas:
+`.github/workflows/ci.yml` runs on every pull request to `main` or `develop` and on every push to those branches:
 
-- **Build**: restaura y compila `Bank.slnx` en Release (más una auditoría informativa de paquetes vulnerables que no bloquea).
-- **Tests (Transfer)**, **Tests (Transaction)**, **Tests (Balance)** y **Tests (Notification)**: un job por servicio, en paralelo. Los tres primeros usan el Docker del runner para levantar SQL Server con Testcontainers; Notification no usa base de datos. Ninguno requiere secretos.
-- Los cinco checks están exigidos en la protección de `main` y `develop` (ajuste de la web de GitHub, no un archivo); sus nombres deben coincidir exactamente con los de los jobs (`Build`, no `build`). No desactivar ni relajar un check para que un cambio pase: se corrige la causa.
-- Flujo: rama nueva desde `develop` actualizado (`feat/`, `fix/`, `ci/`) → push → pull request a `develop` con los cinco checks en verde → merge. Nunca commit directo a `main`/`develop`.
-- Cada job de pruebas sube su `.trx` como artefacto, y una ejecución nueva sobre el mismo PR cancela la anterior.
-- `System.Security.Cryptography.Pkcs` está fijado a 10.0.14 en Transfer, Transaction y Balance solo para corregir la versión vulnerable (9.0.11) que arrastra `Microsoft.Data.SqlClient` 6.1.6; quitar la referencia cuando SqlClient la corrija. El paso de auditoría de la CI debe salir limpio.
-- El runner es Linux (distingue mayúsculas): cuidar la capitalización de rutas y de referencias entre proyectos.
-- Los workflows no se pueden ejecutar en local; se validan subiendo la rama y mirando la pestaña *Actions*.
+- **Build**: restores and compiles `Bank.slnx` in Release (plus an informational audit of vulnerable packages that does not block).
+- **Tests (Transfer)**, **Tests (Transaction)**, **Tests (Balance)** and **Tests (Notification)**: one job per service, in parallel. The first three use the runner's Docker to start SQL Server with Testcontainers; Notification does not use a database. None requires secrets.
+- The five checks are required in the protection of `main` and `develop` (a GitHub web setting, not a file); their names must match the job names exactly (`Build`, not `build`). Do not disable or relax a check to make a change pass: fix the cause.
+- Flow: new branch from an up-to-date `develop` (`feat/`, `fix/`, `ci/`) → push → pull request to `develop` with the five checks green → merge. Never commit directly to `main`/`develop`.
+- Each test job uploads its `.trx` as an artifact, and a new run on the same PR cancels the previous one.
+- `System.Security.Cryptography.Pkcs` is pinned to 10.0.14 in Transfer, Transaction and Balance only to fix the vulnerable version (9.0.11) that `Microsoft.Data.SqlClient` 6.1.6 drags in; remove the reference when SqlClient fixes it. The CI audit step must come out clean.
+- The runner is Linux (case-sensitive): take care with the capitalization of paths and of references between projects.
+- Workflows cannot be run locally; they are validated by pushing the branch and looking at the *Actions* tab.
 
-## Estructura por servicio (respetar)
+## Structure per service (respect it)
 
-- `Domain/` — `Constants` (nombres de eventos y estados), `Entities`, `Events` (`ProcessEvents : INotification`). Sin dependencias externas.
-- `Application/` — interfaces (`IProcessService`, `IDatabaseService`, `IServiceBusSenderService`, ...), `Handlers`, `Models`. Lógica de negocio en `ProcessService`.
-- `External/` — adaptadores: `ServiceBusRecive` (BackgroundService), `ServiceBusSender`, `SendGridEmail`.
-- `Persistence/` — `DatabaseService` (EF Core `DbContext` o `CosmosClient`).
-- `Program.cs` — solo registro de DI.
+- `Domain/` — `Constants` (event and state names), `Entities`, `Events` (`ProcessEvents : INotification`). No external dependencies.
+- `Application/` — interfaces (`IProcessService`, `IDatabaseService`, `IServiceBusSenderService`, ...), `Handlers`, `Models`. Business logic in `ProcessService`.
+- `External/` — adapters: `ServiceBusRecive` (BackgroundService), `ServiceBusSender`, `SendGridEmail`.
+- `Persistence/` — `DatabaseService` (EF Core `DbContext` or `CosmosClient`).
+- `Program.cs` — DI registration only.
 
-Patrón de consumo: `ServiceBusReciveService` → `IMediator.Publish(ProcessEvents)` → `ProcessHandler` (crea scope) → `ProcessService.Execute`. Los `ProcessService` son *scoped*, los senders *singleton*.
+Consumption pattern: `ServiceBusReciveService` → `IMediator.Publish(ProcessEvents)` → `ProcessHandler` (creates a scope) → `ProcessService.Execute`. The `ProcessService` classes are *scoped*, the senders *singleton*.
 
-## Convenciones de eventos
+## Event conventions
 
-- Un solo tópico (`SERVICEBUSTOPIC`); el nombre del evento va en `ServiceBusMessage.Subject` y coincide con el nombre de la suscripción (kebab-case, p. ej. `transfer-initiated`).
-- Los nombres viven en `Domain/Constants` de cada servicio (`ReceivedSubscriptionsConstants` / `SendSubscriptionConstants`). **Los strings deben coincidir entre servicios**; al añadir o renombrar un evento, actualizar emisor, receptor, `infra/local/Config.json` (y la suscripción en Azure, si existe) y la tabla del README.
-- Payload JSON; el `CorrelationId` creado en el Gateway viaja en todos los eventos y debe ser la clave de idempotencia/consulta en cada BD.
-- Estados: `Pending`, `Completed`, `Canceled` (Transfer usa `Complete`). En Transaction, `Completed` y `Canceled` son **finales**: ningún mensaje duplicado o tardío los cambia.
-- Serialización: emisores con `System.Text.Json`, receptores con `Newtonsoft.Json` (case-insensitive). Mantener compatibilidad de campos.
+- A single topic (`SERVICEBUSTOPIC`); the event name goes in `ServiceBusMessage.Subject` and matches the subscription name (kebab-case, e.g. `transfer-initiated`).
+- The names live in `Domain/Constants` of each service (`ReceivedSubscriptionsConstants` / `SendSubscriptionConstants`). **The strings must match across services**; when adding or renaming an event, update sender, receiver, `infra/local/Config.json` (and the subscription in Azure, if it exists) and the README table.
+- JSON payload; the `CorrelationId` created in the Gateway travels in every event and must be the idempotency/lookup key in every database.
+- States: `Pending`, `Completed`, `Canceled` (Transfer uses `Complete`). In Transaction, `Completed` and `Canceled` are **final**: no duplicate or late message changes them.
+- Serialization: senders with `System.Text.Json`, receivers with `Newtonsoft.Json` (case-insensitive). Keep field compatibility.
 
-## Idempotencia y mensajes ignorados
+## Idempotency and ignored messages
 
-- **Transfer**: `TransferRequest` (una fila por `CorrelationId`, índice único) guarda el resultado (`Confirmed`/`Failed`, también los rechazos), la huella del contenido y si ya se emitió. La emisión se toma con un *claim* de `EMISSION_LEASE_SECONDS` (30 s): un duplicado no registra ni emite de nuevo y solo se recupera una emisión pendiente cuando el lease venció.
-- **Transaction**: solo `transaction-initiated` crea la fila; las transiciones se aplican únicamente desde `Pending` con una actualización condicional, y se emite **antes** de confirmar la transición (un fallo de envío deja `Pending` y la reentrega reintenta).
-- `CorrelationId` es `nvarchar(64)` con índice único en `Transfer`, `TransferRequest` y `Transaction`. Una violación de unicidad (SQL 2601/2627) significa "ya procesado", **no** un fallo: `DatabaseErrors.IsUniqueViolation` la distingue de `IsPermanent`.
-- Un mensaje ignorado (duplicado, tardío, sin `CorrelationId`) se completa y se registra con `CorrelationId`, `MessageType` y `Reason` (constantes `IgnoredMessageReasonConstants`).
-- Diseño y decisiones: `specs/001-idempotent-transfer-processing/` (`research.md`, `data-model.md`).
+- **Transfer**: `TransferRequest` (one row per `CorrelationId`, unique index) stores the result (`Confirmed`/`Failed`, rejections too), the content fingerprint and whether it was already emitted. Emission is taken with a *claim* of `EMISSION_LEASE_SECONDS` (30 s): a duplicate neither registers nor emits again, and a pending emission is only recovered once the lease has expired.
+- **Transaction**: only `transaction-initiated` creates the row; transitions are applied only from `Pending` with a conditional update, and the event is emitted **before** the transition is confirmed (a send failure leaves it `Pending` and the redelivery retries).
+- `CorrelationId` is `nvarchar(64)` with a unique index in `Transfer`, `TransferRequest` and `Transaction`. A uniqueness violation (SQL 2601/2627) means "already processed", **not** a failure: `DatabaseErrors.IsUniqueViolation` tells it apart from `IsPermanent`.
+- An ignored message (duplicate, late, without `CorrelationId`) is completed and logged with `CorrelationId`, `MessageType` and `Reason` (`IgnoredMessageReasonConstants` constants).
+- Design and decisions: `specs/001-idempotent-transfer-processing/` (`research.md`, `data-model.md`).
 
-## Resiliencia en el consumo (feature 002)
+## Resilient consumption (feature 002)
 
-Detalle y decisiones: `specs/002-resilient-message-consumption/` (`contracts/message-handling.md`, `research.md`). El código vive en `Application/Resilience/` de cada servicio y está **duplicado a propósito** en los cuatro (la constitución prohíbe un proyecto compartido).
+Details and decisions: `specs/002-resilient-message-consumption/` (`contracts/message-handling.md`, `research.md`). The code lives in `Application/Resilience/` of each service and is **deliberately duplicated** across the four (the constitution forbids a shared project).
 
-- Los receptores usan `AutoCompleteMessages = false`; `ResilientMessageProcessor.HandleAsync` decide completar, reprogramar o apartar cada mensaje.
-- **Tres clases de error**: *venenoso* (cuerpo vacío o ilegible, sin `CorrelationId`, `CorrelationId` de más de 64 caracteres, campo con tipo incorrecto) → DLQ en la primera entrega con motivo `PoisonMessage`; *permanente de datos* (SQL 515/547/8115/8152) → lo resuelve `ProcessService` (emite `*-failed` y completa); *transitorio* (todo lo demás) → reintento. Violación de unicidad (2601/2627) = "ya procesado".
-- **Reintentos**: se programa una copia con `ScheduleMessageAsync` (mismo `Subject`, propiedad `RetryAttempt`) y **después** se completa el original. Hasta 5 reintentos con espera `5 s·3^(n−1)`, tope 300 s, ±20 % (`RetryPolicy`). Un cierre ordenado del servicio no reprograma ni cuenta como fallo.
-- **Agotados los reintentos**: se compensa y el mensaje va a la DLQ con motivo `RetriesExhausted` (`Attempts = 6`, último error en el detalle, máx. 1 024 caracteres). Si no se pudo emitir el evento de fallo, el motivo es `CompensationFailed`.
-- **Compensación solo del primer paso**: `transaction-initiated` → `transaction-failed`, `balance-initiated` → `balance-failed`, `transfer-initiated` → `transfer-failed`. Antes de emitir, `FailureCompensator` comprueba que su propia BD **no** tenga registro del `CorrelationId` (si lo tiene, no emite: la saga ya avanzó); si la BD no responde, emite. El payload es `{CorrelationId, CustomerId}` y **omite** `CustomerId` si no se pudo leer (un `null` explícito haría que el consumidor lo rechace como venenoso). Los manejadores que solo actualizan estado no compensan: se registran y se apartan.
-- `ProcessError` **solo registra** (`ProcessorErrorHandler`): no aparta, completa ni compensa.
-- Cada mensaje apartado o reprogramado se registra con `CorrelationId`, `MessageId`, `MessageType`, `Attempt`, `Classification` y `Reason`.
-- Mensajes manuales para probar (cuerpo inválido, `RetryAttempt`): `infra/local/duplicate-test` con `--raw`.
+- The receivers use `AutoCompleteMessages = false`; `ResilientMessageProcessor.HandleAsync` decides whether to complete, reschedule or set aside each message.
+- **Three classes of error**: *poison* (empty or unreadable body, no `CorrelationId`, `CorrelationId` longer than 64 characters, field with the wrong type) → DLQ on the first delivery with reason `PoisonMessage`; *permanent data error* (SQL 515/547/8115/8152) → resolved by `ProcessService` (emits `*-failed` and completes); *transient* (everything else) → retry. Uniqueness violation (2601/2627) = "already processed".
+- **Retries**: a copy is scheduled with `ScheduleMessageAsync` (same `Subject`, `RetryAttempt` property) and the original is completed **afterwards**. Up to 5 retries with a delay of `5 s·3^(n−1)`, capped at 300 s, ±20 % (`RetryPolicy`). A graceful service shutdown neither reschedules nor counts as a failure.
+- **Retries exhausted**: the failure is compensated and the message goes to the DLQ with reason `RetriesExhausted` (`Attempts = 6`, last error in the detail, max. 1,024 characters). If the failure event could not be emitted, the reason is `CompensationFailed`.
+- **Compensation of the first step only**: `transaction-initiated` → `transaction-failed`, `balance-initiated` → `balance-failed`, `transfer-initiated` → `transfer-failed`. Before emitting, `FailureCompensator` checks that its own DB has **no** record of the `CorrelationId` (if it does, it does not emit: the saga has already progressed); if the DB does not respond, it emits. The payload is `{CorrelationId, CustomerId}` and **omits** `CustomerId` if it could not be read (an explicit `null` would make the consumer reject it as poison). Handlers that only update state do not compensate: they are logged and set aside.
+- `ProcessError` **only logs** (`ProcessorErrorHandler`): it does not set aside, complete or compensate.
+- Every message set aside or rescheduled is logged with `CorrelationId`, `MessageId`, `MessageType`, `Attempt`, `Classification` and `Reason`.
+- Manual messages for testing (invalid body, `RetryAttempt`): `infra/local/duplicate-test` with `--raw`.
 
-## Principios EDD a respetar al cambiar código
+## EDD principles to respect when changing code
 
-- Servicios desacoplados: nada de referencias de proyecto ni llamadas HTTP entre servicios; solo eventos.
-- Handlers **idempotentes** (Service Bus entrega *at-least-once*): comprobar por `CorrelationId` antes de insertar.
-- Todo camino de error debe emitir su evento de fallo/compensación (`*-failed`) en vez de perderse.
-- Cada servicio es dueño de su BD; no compartir tablas.
+- Decoupled services: no project references or HTTP calls between services; events only.
+- **Idempotent** handlers (Service Bus delivers *at-least-once*): check by `CorrelationId` before inserting.
+- Every error path must emit its failure/compensation event (`*-failed`) instead of getting lost.
+- Each service owns its DB; do not share tables.
 
-## Deuda técnica conocida (ver README)
+## Known technical debt (see README)
 
-sin Outbox, manejadores de solo-actualización (p. ej. `balance-confirmed`, `transfer-confirmed-balance`) sin evento de fallo al agotar los reintentos (solo se registran y van a la DLQ), sin alerta de longitud de la DLQ ni herramienta de reproceso, Balance y Notification sin idempotencia, destinatario de email hardcodeado en Notification, senders creados por mensaje sin dispose, Gateway sin auth ni `CorrelationId` en la respuesta, `Transfer/External/SendGridEmail` vacío. Si el cambio toca estas zonas, señálala, pero no la arregles sin que se pida.
+No Outbox, update-only handlers (e.g. `balance-confirmed`, `transfer-confirmed-balance`) without a failure event when retries are exhausted (they are only logged and go to the DLQ), no DLQ length alert or reprocessing tool, Balance and Notification without idempotency, hardcoded email recipient in Notification, senders created per message without dispose, Gateway without auth or `CorrelationId` in the response, empty `Transfer/External/SendGridEmail`. If a change touches these areas, point it out, but do not fix it unless asked.
 
-## Estilo
+## Style
 
-Seguir el código existente: namespaces file-scoped, constantes `UPPER_SNAKE_CASE`, sufijos `Service`/`Handler`, un `Execute` por servicio/adaptador. Nota: los nombres `ServiceBusRecive` (sin "e") son los reales; no "corregirlos" parcialmente.
+Follow the existing code: file-scoped namespaces, `UPPER_SNAKE_CASE` constants, `Service`/`Handler` suffixes, one `Execute` per service/adapter. Note: the `ServiceBusRecive` names (without the "e") are the real ones; do not "fix" them partially.
+
+## Language
+
+All repository documentation (Markdown files, workflow and infrastructure comments) is written in English. Runtime strings that already exist in the code (log messages, dead-letter details) are still in Spanish; do not mix: change them in code and tests together, never in documentation alone.

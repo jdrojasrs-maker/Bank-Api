@@ -1,6 +1,6 @@
-# Implementation Plan: Consumo resiliente de mensajes
+# Implementation Plan: Resilient message consumption
 
-**Branch**: `002-resilient-message-consumption` (rama no creada; el trabajo continúa en `feat/retry-and-poison-messages`) | **Date**: 2026-11-07 | **Spec**: [spec.md](spec.md)
+**Branch**: `002-resilient-message-consumption` (branch not created; the work continues on `feat/retry-and-poison-messages`) | **Date**: 2026-11-07 | **Spec**: [spec.md](spec.md)
 
 **Input**: Feature specification from `/specs/002-resilient-message-consumption/spec.md`
 
@@ -8,70 +8,70 @@
 
 ## Summary
 
-Requisito principal: los cuatro servicios que consumen mensajes (Transaction, Balance, Transfer, Notification) deben **distinguir
-mensajes venenosos, fallos permanentes de datos y fallos transitorios**; apartar los venenosos a la DLQ en la primera entrega con
-motivo y detalle; **reintentar los transitorios con espera creciente** en lugar de agotar las 10 entregas en segundos; **compensar**
-(`*-failed`) y apartar al agotarse los intentos; y registrar todo con `CorrelationId`.
+Main requirement: the four services that consume messages (Transaction, Balance, Transfer, Notification) must **distinguish
+poison messages, permanent data failures and transient failures**; set poison messages aside to the DLQ on the first delivery with
+a reason and detail; **retry the transient ones with a growing delay** instead of using up the 10 deliveries in seconds; **compensate**
+(`*-failed`) and set aside when the attempts are exhausted; and log everything with `CorrelationId`.
 
-Enfoque técnico (detalle y evidencia en [research.md](research.md)):
-- **Una capa de resiliencia por servicio** (`Application/Resilience/`), sin tocar `ProcessService`: un procesador que decide
-  (completar / apartar / reintentar) a partir de una clasificación, y un adaptador fino en `External/ServiceBusRecive` que ejecuta esas
-  decisiones con el SDK. Así las 103 pruebas existentes no cambian.
-- **Mensaje venenoso**: validación previa a MediatR (cuerpo vacío, JSON ilegible o `null`, sin `CorrelationId`, más de 64 caracteres).
-  `DeadLetterMessageAsync` con motivo `PoisonMessage`, detalle y `CorrelationId` como propiedad.
-- **Espera creciente**: se **programa una copia** del mensaje (`ScheduleMessageAsync`) con el contador `RetryAttempt` y se completa el
-  original. 5 reintentos con espera `min(5 s · 3^(n-1), 5 min)` ±20 % de variación (ventana nominal ≈ 8 min). **Probado en el
-  emulador** ([PRUEBA] en research.md): la entrega programada funciona.
-- **Reintentos agotados**: se emite el `*-failed` del primer paso (Transaction, Balance, Transfer) y se aparta con motivo
-  `RetriesExhausted`. Notification y los manejadores que solo actualizan estado no tienen evento de fallo: se registran y se apartan.
-- **`ProcessError`** solo registra (origen, entidad, excepción); no aparta ni completa.
-- **Pruebas automáticas** para la lógica de decisión (sin broker, con dobles) y para la compensación; dos proyectos de pruebas nuevos
-  (Balance con SQL Server en contenedor, Notification sin base de datos), y ampliación de la CI.
-- **Regla de seguridad de la compensación (FR-016)**: antes de emitir un `*-failed`, el compensador consulta el registro del
-  `CorrelationId` en la base del propio servicio; si ya existe, no emite (evita cancelar sagas sanas o mandar correos de fallo falsos).
-  Si no hay registro o la base no responde, emite.
-- Sin cambios de esquema, de nombres de eventos, de payloads ni de `infra/local/Config.json`.
+Technical approach (details and evidence in [research.md](research.md)):
+- **One resilience layer per service** (`Application/Resilience/`), without touching `ProcessService`: a processor that decides
+  (complete / set aside / retry) from a classification, and a thin adapter in `External/ServiceBusRecive` that executes those
+  decisions with the SDK. That way the 103 existing tests do not change.
+- **Poison message**: validation before MediatR (empty body, unreadable or `null` JSON, no `CorrelationId`, more than 64 characters).
+  `DeadLetterMessageAsync` with reason `PoisonMessage`, detail and `CorrelationId` as a property.
+- **Growing delay**: a **copy** of the message is **scheduled** (`ScheduleMessageAsync`) with the `RetryAttempt` counter and the
+  original is completed. 5 retries with a delay `min(5 s · 3^(n-1), 5 min)` ±20 % variation (nominal window ≈ 8 min). **Tested in the
+  emulator** ([TEST] in research.md): the scheduled delivery works.
+- **Retries exhausted**: the first step's `*-failed` is emitted (Transaction, Balance, Transfer) and the message is set aside with reason
+  `RetriesExhausted`. Notification and the handlers that only update state have no failure event: they are logged and set aside.
+- **`ProcessError`** only logs (origin, entity, exception); it does not set aside or complete.
+- **Automated tests** for the decision logic (without a broker, with doubles) and for the compensation; two new test projects
+  (Balance with SQL Server in a container, Notification without a database), and an extension of the CI.
+- **Compensation safety rule (FR-016)**: before emitting a `*-failed`, the compensator queries the `CorrelationId` record in the
+  service's own database; if it already exists, it does not emit (avoids canceling healthy sagas or sending false failure emails).
+  If there is no record or the database does not respond, it emits.
+- No changes to schema, event names, payloads or `infra/local/Config.json`.
 
 ## Technical Context
 
-**Language/Version**: C# / .NET 10 (`net10.0`), nullable e implicit usings habilitados
+**Language/Version**: C# / .NET 10 (`net10.0`), nullable and implicit usings enabled
 
-**Primary Dependencies**: Azure.Messaging.ServiceBus 7.21.0, MediatR 14.2.0, Newtonsoft.Json 13.0.4 (lectura), System.Text.Json (emisión). **Sin dependencias nuevas** en los servicios. Pruebas: xUnit y los paquetes ya usados en los proyectos de Transfer y Transaction
+**Primary Dependencies**: Azure.Messaging.ServiceBus 7.21.0, MediatR 14.2.0, Newtonsoft.Json 13.0.4 (reading), System.Text.Json (emission). **No new dependencies** in the services. Tests: xUnit and the packages already used in the Transfer and Transaction projects
 
-**Storage**: N/A. No hay tablas ni migraciones nuevas; el estado del reintento viaja en una propiedad del mensaje
+**Storage**: N/A. There are no new tables or migrations; the retry state travels in a message property
 
-**Testing**: xUnit. La lógica de decisión se prueba con dobles de `IMessageActions` e `IFailureCompensator` y un delegado `process` (sin broker ni base de datos). El compensador (FR-016) se prueba con SQL Server real en contenedor en Transaction, Balance y Transfer; Balance obtiene un proyecto nuevo con Testcontainers (Docker) y Notification un proyecto nuevo sin Docker
+**Testing**: xUnit. The decision logic is tested with doubles of `IMessageActions` and `IFailureCompensator` and a `process` delegate (no broker or database). The compensator (FR-016) is tested with a real SQL Server in a container in Transaction, Balance and Transfer; Balance gets a new project with Testcontainers (Docker) and Notification a new project without Docker
 
-**Target Platform**: servicios .NET en el host (`dotnet run --launch-profile http`) con emulador de Azure Service Bus y SQL Server en contenedores
+**Target Platform**: .NET services on the host (`dotnet run --launch-profile http`) with an Azure Service Bus emulator and SQL Server in containers
 
-**Project Type**: microservicios dirigidos por eventos (`Bank.slnx`); se modifican cuatro servicios
+**Project Type**: event-driven microservices (`Bank.slnx`); four services are modified
 
-**Performance Goals**: sin objetivo cuantitativo propio; el coste por mensaje sano es una validación de JSON en memoria. Un reintento cuesta un envío programado y una finalización
+**Performance Goals**: no quantitative goal of its own; the cost per healthy message is an in-memory JSON validation. A retry costs one scheduled send and one completion
 
-**Constraints**: sin referencias de proyecto ni HTTP entre servicios (Principio I) ⇒ el código de resiliencia se **duplica por servicio**; sin cambios de contrato de eventos; `LockDuration` = 1 min, `MaxDeliveryCount` = 10 y TTL = 1 h se conservan (red de seguridad); el emulador limita el TTL a 1 h, por lo que la ventana de ≈ 8 min cabe de sobra
+**Constraints**: no project references or HTTP between services (Principle I) ⇒ the resilience code is **duplicated per service**; no changes to the event contract; `LockDuration` = 1 min, `MaxDeliveryCount` = 10 and TTL = 1 h are kept (safety net); the emulator limits the TTL to 1 h, so the ≈ 8 min window fits comfortably
 
-**Scale/Scope**: 4 servicios, ≈ 7 archivos nuevos por servicio, 2 proyectos de pruebas nuevos, 2 jobs nuevos en la CI, 1 enmienda menor de la constitución
+**Scale/Scope**: 4 services, ≈ 7 new files per service, 2 new test projects, 2 new CI jobs, 1 minor amendment of the constitution
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-| Principio / regla | Evaluación previa a la investigación | Reevaluación tras el diseño |
+| Principle / rule | Assessment before research | Re-assessment after the design |
 |---|---|---|
-| I. Desacoplados solo por eventos | ⚠️ El código común no puede compartirse en un proyecto | ✅ Se duplica por servicio (ver *Complexity Tracking*); sin referencias ni HTTP; los reintentos usan el mismo tópico |
-| II. Idempotentes por `CorrelationId` | ⚠️ Balance y Notification no lo son y recibirán reintentos | ⚠️ Riesgo señalado, **no empeora**: hoy ya reciben hasta 10 entregas; con espera son 6. Sin cambios en su lógica (deuda: hallazgo 5) |
-| III. Todo camino de error emite su fallo | ⚠️ Es el objetivo, pero no todos los manejadores tienen evento de fallo | ✅ Cubre los primeros pasos (`*-initiated`) y los venenosos con `CorrelationId`. ⚠️ Los manejadores de solo-actualización quedan registrados y apartados, sin compensar (hallazgo 6; ver *Complexity Tracking*) |
-| IV. Cada servicio es dueño de su BD | ✅ | ✅ Sin esquema nuevo. El compensador **lee** solo la base de su propio servicio (FR-016) |
-| V. Toda corrección lleva prueba automática | ✅ | ✅ Cada escenario de la spec tiene prueba (ver `quickstart.md`); se escriben antes que el código |
-| Restricciones: contrato de eventos | ✅ | ✅ Mismos nombres y payloads; solo se añade una propiedad de aplicación (`RetryAttempt`) en los mensajes reprogramados ([contracts/message-handling.md](contracts/message-handling.md)) |
-| Restricciones: estructura por servicio | ✅ | ✅ `Application/Resilience/` y `External/ServiceBusRecive/`; `Program.cs` solo registra dependencias |
-| Restricciones: secretos | ✅ | ✅ Ninguno nuevo; la cadena del emulador ya está documentada |
-| Flujo: cambio de evento exige actualizar Config.json y README | ✅ | ✅ No se añaden ni renombran eventos |
-| Flujo: PR con CI en verde y checks exigidos | ⚠️ | ⚠️ Se añaden dos jobs (`Tests (Balance)`, `Tests (Notification)`): requieren **enmienda de la constitución** y **ajustar la protección de ramas** (paso manual en la web de GitHub) |
-| Flujo: deuda técnica solo se señala | ✅ | ✅ Outbox, reconciliador, circuit breaker, idempotencia de Balance/Notification y `ServiceBusSender` sin dispose se señalan, no se corrigen |
-| Flujo: sin commits sin orden expresa | ✅ | ✅ |
+| I. Decoupled by events only | ⚠️ The common code cannot be shared in a project | ✅ Duplicated per service (see *Complexity Tracking*); no references or HTTP; the retries use the same topic |
+| II. Idempotent by `CorrelationId` | ⚠️ Balance and Notification are not, and they will receive retries | ⚠️ Risk pointed out, **does not worsen**: today they already receive up to 10 deliveries; with a delay it is 6. No changes to their logic (debt: finding 5) |
+| III. Every error path emits its failure | ⚠️ It is the goal, but not all handlers have a failure event | ✅ Covers the first steps (`*-initiated`) and the poison messages with `CorrelationId`. ⚠️ The update-only handlers stay logged and set aside, without compensation (finding 6; see *Complexity Tracking*) |
+| IV. Each service owns its DB | ✅ | ✅ No new schema. The compensator **reads** only its own service's database (FR-016) |
+| V. Every fix comes with an automated test | ✅ | ✅ Each scenario of the spec has a test (see `quickstart.md`); they are written before the code |
+| Constraints: event contract | ✅ | ✅ Same names and payloads; only an application property (`RetryAttempt`) is added on the rescheduled messages ([contracts/message-handling.md](contracts/message-handling.md)) |
+| Constraints: structure per service | ✅ | ✅ `Application/Resilience/` and `External/ServiceBusRecive/`; `Program.cs` only registers dependencies |
+| Constraints: secrets | ✅ | ✅ None new; the emulator connection string is already documented |
+| Workflow: an event change requires updating Config.json and the README | ✅ | ✅ No events are added or renamed |
+| Workflow: PR with CI green and required checks | ⚠️ | ⚠️ Two jobs are added (`Tests (Balance)`, `Tests (Notification)`): they require a **constitution amendment** and **adjusting the branch protection** (manual step in the GitHub web UI) |
+| Workflow: technical debt is only pointed out | ✅ | ✅ Outbox, reconciler, circuit breaker, Balance/Notification idempotency and `ServiceBusSender` without dispose are pointed out, not fixed |
+| Workflow: no commits without an express order | ✅ | ✅ |
 
-**Resultado**: ✅ Sin violaciones bloqueantes. Dos desviaciones justificadas (abajo) y dos pasos manuales identificados.
+**Result**: ✅ No blocking violations. Two justified deviations (below) and two manual steps identified.
 
 ## Project Structure
 
@@ -86,7 +86,7 @@ specs/002-resilient-message-consumption/
 ├── contracts/
 │   └── message-handling.md   # Phase 1 output (/speckit-plan command)
 ├── checklists/
-│   └── requirements.md  # Calidad de la especificación (/speckit-specify)
+│   └── requirements.md  # Specification quality (/speckit-specify)
 └── tasks.md             # Phase 2 output (/speckit-tasks command - NOT created by /speckit-plan)
 ```
 
@@ -94,40 +94,40 @@ specs/002-resilient-message-consumption/
 
 ```text
 src/
-├── Bank.Transaction/Bank.Transaction.Api/      # misma forma en Balance y Transfer
+├── Bank.Transaction/Bank.Transaction.Api/      # same shape in Balance and Transfer
 │   ├── Domain/Constants/                       # + DeadLetterReasonConstants, RetryConstants
-│   ├── Application/Resilience/                 # nuevo
-│   │   ├── RetryPolicy.cs                      #   máximo de reintentos y espera con variación
-│   │   ├── MessageClassifier.cs                #   detecta mensajes venenosos
-│   │   ├── IMessageActions.cs                  #   completar / apartar / reprogramar (abstracción del broker)
-│   │   ├── IFailureCompensator.cs              #   emitir el *-failed del primer paso
-│   │   ├── FailureCompensator.cs               #   implementación: consulta el registro propio (IServiceScopeFactory → IDatabaseService) y emite con IServiceBusSenderService
-│   │   ├── ProcessorErrorHandler.cs            #   registra los errores del procesador (ProcessError)
-│   │   └── ResilientMessageProcessor.cs        #   decide qué hacer con cada mensaje
+│   ├── Application/Resilience/                 # new
+│   │   ├── RetryPolicy.cs                      #   maximum retries and delay with variation
+│   │   ├── MessageClassifier.cs                #   detects poison messages
+│   │   ├── IMessageActions.cs                  #   complete / set aside / reschedule (broker abstraction)
+│   │   ├── IFailureCompensator.cs              #   emit the first step's *-failed
+│   │   ├── FailureCompensator.cs               #   implementation: queries its own record (IServiceScopeFactory → IDatabaseService) and emits with IServiceBusSenderService
+│   │   ├── ProcessorErrorHandler.cs            #   logs the processor's errors (ProcessError)
+│   │   └── ResilientMessageProcessor.cs        #   decides what to do with each message
 │   ├── External/ServiceBusRecive/
-│   │   ├── ServiceBusReciveService.cs          #   se adelgaza; ProcessError registra
-│   │   └── ServiceBusMessageActions.cs         #   adaptador sobre ProcessMessageEventArgs
-│   └── Program.cs                              #   + registro de DI
-├── Bank.Notification/Bank.Notification.Api/    # igual, sin FailureCompensator (registra un compensador nulo)
-└── (Bank.Gateway no consume mensajes: sin cambios)
+│   │   ├── ServiceBusReciveService.cs          #   gets slimmer; ProcessError logs
+│   │   └── ServiceBusMessageActions.cs         #   adapter over ProcessMessageEventArgs
+│   └── Program.cs                              #   + DI registration
+├── Bank.Notification/Bank.Notification.Api/    # same, without FailureCompensator (registers a null compensator)
+└── (Bank.Gateway does not consume messages: no changes)
 
 tests/
-├── Bank.Transfer.Api.Tests/       # + Resilience/ (decisiones, compensación con SQL real)
+├── Bank.Transfer.Api.Tests/       # + Resilience/ (decisions, compensation with real SQL)
 ├── Bank.Transaction.Api.Tests/    # + Resilience/
-├── Bank.Balance.Api.Tests/        # nuevo, con SQL Server en contenedor (solo el compensador lo usa)
-└── Bank.Notification.Api.Tests/   # nuevo, sin base de datos
+├── Bank.Balance.Api.Tests/        # new, with SQL Server in a container (only the compensator uses it)
+└── Bank.Notification.Api.Tests/   # new, without a database
 
-.github/workflows/ci.yml           # + Balance y Notification en la matriz de pruebas
-.specify/memory/constitution.md    # enmienda: lista de checks exigidos (1.2.0)
-Bank.slnx                          # + los dos proyectos de pruebas
-infra/local/duplicate-test/        # opción para enviar un cuerpo arbitrario (mensaje venenoso) en la verificación manual
-CLAUDE.md, README.md               # documentar el comportamiento y cómo verificarlo
+.github/workflows/ci.yml           # + Balance and Notification in the test matrix
+.specify/memory/constitution.md    # amendment: list of required checks (1.2.0)
+Bank.slnx                          # + the two test projects
+infra/local/duplicate-test/        # option to send an arbitrary body (poison message) in manual verification
+CLAUDE.md, README.md               # document the behavior and how to verify it
 ```
 
-**Structure Decision**: se respeta la estructura por servicio de `CLAUDE.md`. La lógica de decisión vive en `Application/Resilience/`
-(independiente del SDK, por eso probable sin broker) y el SDK queda confinado a `External/ServiceBusRecive/`. **`ProcessService` no
-se modifica**: la validación previa y la clasificación ocurren antes de MediatR, y la compensación es una clase aparte. Los proyectos
-de pruebas siguen siendo **uno por servicio**.
+**Structure Decision**: the per-service structure of `CLAUDE.md` is respected. The decision logic lives in `Application/Resilience/`
+(independent of the SDK, hence testable without a broker) and the SDK stays confined to `External/ServiceBusRecive/`. **`ProcessService` is
+not modified**: the prior validation and the classification happen before MediatR, and the compensation is a separate class. The test
+projects remain **one per service**.
 
 ## Complexity Tracking
 
@@ -135,7 +135,7 @@ de pruebas siguen siendo **uno por servicio**.
 
 | Violation | Why Needed | Simpler Alternative Rejected Because |
 |---|---|---|
-| Principio I: el código de resiliencia se duplica en cuatro servicios | Compartirlo exigiría una referencia de proyecto o un paquete común entre servicios | Una biblioteca compartida (o archivos enlazados) acopla versiones y despliegues, justo lo que el Principio I prohíbe. Es código pequeño y estable; el coste de duplicarlo es bajo |
-| Principio III: los manejadores de solo-actualización (p. ej. `balance-confirmed`, `transfer-confirmed` en Transaction; `transfer-confirmed-balance` en Balance; Notification) no emiten `*-failed` al agotar los reintentos | No existe un evento de fallo definido para esos pasos; inventarlo cambia el contrato y el flujo de la saga | Inventar eventos nuevos o un reconciliador excede esta feature (hallazgo 6). Se registran y se apartan con motivo, de modo que la DLQ los explica |
-| Dos proyectos de pruebas nuevos y dos jobs de CI nuevos | El Principio V exige pruebas para el comportamiento nuevo de Balance y Notification, y el Principio I limita un proyecto de pruebas a un servicio | Probarlos desde otro proyecto de pruebas referenciaría más de un servicio; no probarlos incumple el Principio V |
-| Enmienda de la constitución (1.1.0 → 1.2.0) y cambio manual de la protección de ramas | Los checks exigidos pasan de 3 a 5 y la constitución los nombra expresamente | Dejar los jobs nuevos como informativos permite fusionar con pruebas rotas, lo que contradice la regla de no relajar checks |
+| Principle I: the resilience code is duplicated across four services | Sharing it would require a project reference or a common package between services | A shared library (or linked files) couples versions and deployments, exactly what Principle I forbids. It is small and stable code; the cost of duplicating it is low |
+| Principle III: the update-only handlers (e.g. `balance-confirmed`, `transfer-confirmed` in Transaction; `transfer-confirmed-balance` in Balance; Notification) do not emit `*-failed` when retries are exhausted | There is no failure event defined for those steps; inventing one changes the contract and the saga flow | Inventing new events or a reconciler exceeds this feature (finding 6). They are logged and set aside with a reason, so the DLQ explains them |
+| Two new test projects and two new CI jobs | Principle V requires tests for the new behavior of Balance and Notification, and Principle I limits a test project to one service | Testing them from another test project would reference more than one service; not testing them breaks Principle V |
+| Amendment of the constitution (1.1.0 → 1.2.0) and manual change of the branch protection | The required checks go from 3 to 5 and the constitution names them expressly | Leaving the new jobs as informational allows merging with broken tests, which contradicts the rule of not relaxing checks |
